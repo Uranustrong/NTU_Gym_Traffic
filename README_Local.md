@@ -182,12 +182,29 @@ python3 sync_to_postgres.py \
   --postgres-url postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch
 ```
 
+If `psql` is not installed on macOS but the Docker PostgreSQL container is running, use the included wrapper:
+
+```bash
+python3 sync_to_postgres.py \
+  --sqlite-db gym_counts.sqlite3 \
+  --postgres-url postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch \
+  --psql tools/psql_gym_postgres.sh
+```
+
 Apply the weekly dashboard views:
 
 ```bash
 psql postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch \
   -v ON_ERROR_STOP=1 \
   -f sql/grafana_weekly_views.sql
+```
+
+Or apply them through the Docker PostgreSQL container:
+
+```bash
+docker exec -i gym-postgres psql -U songhejun -d gym_fetch \
+  -v ON_ERROR_STOP=1 \
+  -f - < sql/grafana_weekly_views.sql
 ```
 
 The sync script uses Python standard-library modules plus the `psql` command-line client. No Python PostgreSQL package is required. It creates these PostgreSQL tables if needed:

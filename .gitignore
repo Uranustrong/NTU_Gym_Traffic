@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local data and exports
+*.sqlite3
+*.sqlite3.*
+*.db
+*.db-*
+*.csv
+!docs/**/*.csv
+
+# Runtime logs
+logs/
+*.log
+
+# Local-only sync/config files
+.env
+.env.*
+!.env.example
+
+# Brainstorming scratch output
+.superpowers/brainstorm/
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Docker/Grafana local state should live in Docker volumes, not git
+docker-data/
+grafana-data/
+postgres-data/

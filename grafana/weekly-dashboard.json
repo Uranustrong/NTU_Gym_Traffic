@@ -1,0 +1,269 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "gym-weekly-display",
+    "title": "Gym Weekly Occupancy",
+    "tags": [
+      "gym",
+      "weekly"
+    ],
+    "timezone": "browser",
+    "schemaVersion": 42,
+    "version": 0,
+    "refresh": "5m",
+    "time": {
+      "from": "now-7d",
+      "to": "now"
+    },
+    "templating": {
+      "list": [
+        {
+          "name": "venue",
+          "type": "query",
+          "label": "Venue",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "bfm1ctqr9jgn4b"
+          },
+          "query": "SELECT DISTINCT venue FROM occupancy ORDER BY venue;",
+          "refresh": 1,
+          "multi": true,
+          "includeAll": true,
+          "current": {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          }
+        },
+        {
+          "name": "metric",
+          "type": "custom",
+          "label": "Metric",
+          "query": "avg_count,crowding_ratio",
+          "current": {
+            "selected": true,
+            "text": "avg_count",
+            "value": "avg_count"
+          }
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "type": "table",
+        "title": "Current vs Same Weekday/Time History",
+        "gridPos": {
+          "h": 7,
+          "w": 24,
+          "x": 0,
+          "y": 0
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "bfm1ctqr9jgn4b"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "bfm1ctqr9jgn4b"
+            },
+            "format": "table",
+            "rawQuery": true,
+            "editorMode": "code",
+            "rawSql": "SELECT\n  venue,\n  latest_fetched_at,\n  current_count,\n  historical_median_current_count,\n  difference_from_median,\n  sample_count,\n  current_crowding_ratio\nFROM current_vs_history\nORDER BY venue;"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "auto",
+              "cellOptions": {
+                "type": "auto"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "difference_from_median"
+              },
+              "properties": [
+                {
+                  "id": "custom.cellOptions",
+                  "value": {
+                    "type": "color-background"
+                  }
+                },
+                {
+                  "id": "thresholds",
+                  "value": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      },
+                      {
+                        "color": "yellow",
+                        "value": 0
+                      },
+                      {
+                        "color": "red",
+                        "value": 10
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "options": {
+          "showHeader": true,
+          "cellHeight": "sm"
+        }
+      },
+      {
+        "id": 2,
+        "type": "table",
+        "title": "Weekly 30-Minute Occupancy Slots",
+        "gridPos": {
+          "h": 12,
+          "w": 24,
+          "x": 0,
+          "y": 7
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "bfm1ctqr9jgn4b"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "bfm1ctqr9jgn4b"
+            },
+            "format": "table",
+            "rawQuery": true,
+            "editorMode": "code",
+            "rawSql": "SELECT\n  venue,\n  weekday_label,\n  slot_label,\n  CASE\n    WHEN '${metric}' = 'crowding_ratio' THEN avg_crowding_ratio\n    ELSE avg_current_count\n  END AS value,\n  sample_count\nFROM weekly_occupancy_slots\nWHERE venue IN (${venue:sqlstring})\nORDER BY venue, slot_start_time, weekday_number;"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "auto",
+              "cellOptions": {
+                "type": "auto"
+              }
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {
+                "id": "byName",
+                "options": "value"
+              },
+              "properties": [
+                {
+                  "id": "custom.cellOptions",
+                  "value": {
+                    "type": "color-background"
+                  }
+                },
+                {
+                  "id": "thresholds",
+                  "value": {
+                    "mode": "absolute",
+                    "steps": [
+                      {
+                        "color": "green",
+                        "value": null
+                      },
+                      {
+                        "color": "yellow",
+                        "value": 40
+                      },
+                      {
+                        "color": "red",
+                        "value": 80
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "options": {
+          "showHeader": true,
+          "cellHeight": "sm",
+          "sortBy": [
+            {
+              "desc": false,
+              "displayName": "slot_label"
+            }
+          ]
+        }
+      },
+      {
+        "id": 3,
+        "type": "timeseries",
+        "title": "Selected Venue Exact Counts",
+        "gridPos": {
+          "h": 10,
+          "w": 24,
+          "x": 0,
+          "y": 19
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "bfm1ctqr9jgn4b"
+        },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": {
+              "type": "grafana-postgresql-datasource",
+              "uid": "bfm1ctqr9jgn4b"
+            },
+            "format": "time_series",
+            "rawQuery": true,
+            "editorMode": "code",
+            "rawSql": "SELECT\n  fetched_at AS \"time\",\n  venue AS metric,\n  current_count AS value\nFROM occupancy\nWHERE $__timeFilter(fetched_at)\n  AND venue IN (${venue:sqlstring})\nORDER BY fetched_at;"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "drawStyle": "line",
+              "lineInterpolation": "linear",
+              "lineWidth": 2,
+              "fillOpacity": 10,
+              "showPoints": "never"
+            },
+            "unit": "short"
+          },
+          "overrides": []
+        },
+        "options": {
+          "tooltip": {
+            "mode": "multi",
+            "sort": "none"
+          },
+          "legend": {
+            "showLegend": true,
+            "displayMode": "list",
+            "placement": "bottom"
+          }
+        }
+      }
+    ]
+  },
+  "overwrite": true
+}

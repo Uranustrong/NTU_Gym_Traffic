@@ -231,6 +231,18 @@ Password: gym_fetch_dev
 TLS/SSL mode: disable
 ```
 
+If the datasource UID is still `bfm1ctqr9jgn4b`, import the prebuilt weekly dashboard with Grafana's API:
+
+```bash
+curl -s -u admin:admin \
+  -H 'Content-Type: application/json' \
+  -X POST \
+  --data @grafana/weekly-dashboard.json \
+  http://127.0.0.1:3000/api/dashboards/db
+```
+
+Then open <http://localhost:3000/d/gym-weekly-display/gym-weekly-occupancy>.
+
 ### Create Grafana Panels
 
 After the PostgreSQL datasource is saved, create a dashboard:

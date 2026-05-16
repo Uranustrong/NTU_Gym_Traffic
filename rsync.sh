@@ -3,7 +3,8 @@ set -euo pipefail
 
 REMOTE="${REMOTE:-b12902066@ws7.csie.ntu.edu.tw}"
 REMOTE_DIR="${REMOTE_DIR:-/tmp2/b12902066/Gym_Fetch}"
-LOCAL_DIR="${LOCAL_DIR:-.}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+LOCAL_DIR="${LOCAL_DIR:-$SCRIPT_DIR}"
 DB_NAME="${DB_NAME:-gym_counts.sqlite3}"
 SNAPSHOT_NAME="${SNAPSHOT_NAME:-gym_counts.snapshot.sqlite3}"
 POSTGRES_URL="${POSTGRES_URL:-postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch}"

@@ -12,8 +12,8 @@ Pure Python standard library — no third-party packages. `requirements.txt` is 
 
 The same code runs in two places, and the two READMEs reflect that:
 
-- **`README.md`** — the *remote* collector at `b12902066@ws7.csie.ntu.edu.tw:/tmp2/b12902066/Gym_Fetch`, where cron runs `fetch_counts.py` on 5-minute boundaries during opening hours.
-- **`README_Local.md`** — the *local* mac mirror at `~/Library/Mobile Documents/com~apple~CloudDocs/Code/Fetch_Gym` (iCloud, path contains a space — always quote it), which pulls the remote SQLite via `rsync.sh` and syncs into local Docker PostgreSQL + Grafana.
+- **`README_Server.md`** — the *remote* collector at `b12902066@ws7.csie.ntu.edu.tw:/tmp2/b12902066/Gym_Fetch`, where cron runs `fetch_counts.py` on 5-minute boundaries during opening hours.
+- **`README_Local.md`** — the *local* mac mirror at `/Users/songhejun/Downloads/My_Project/Fetch_Gym`, which pulls the remote SQLite via `rsync.sh` and syncs into local Docker PostgreSQL + Grafana.
 
 `rsync.sh pull-data` is the bridge: it takes a `sqlite3 .backup` snapshot on the remote, rsyncs it down (versioning the prior local DB as `*.bak-<timestamp>`), then auto-runs `sync_to_postgres.py` if present.
 

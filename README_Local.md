@@ -7,12 +7,12 @@ Fetch current NTU sports center occupancy from <https://rent.pe.ntu.edu.tw/> and
 This project only uses Python standard-library modules. A virtual environment is optional, not required.
 
 ```bash
-cd "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Code/Fetch_Gym"
+cd "/Users/songhejun/Downloads/My_Project/Fetch_Gym"
 python3 --version
 chmod +x fetch_counts.py
 ```
 
-The local project path contains a space (`Mobile Documents`), so keep the path quoted in shell commands and cron entries.
+The local project path is `/Users/songhejun/Downloads/My_Project/Fetch_Gym`. The examples keep it quoted so they stay safe if the project is moved to a path with spaces later.
 
 `requirements.txt` is kept so the project still has a normal Python shape, but there is nothing to install right now. If you prefer using a virtual environment anyway:
 
@@ -56,9 +56,9 @@ The sports center opening hours are:
 Use `crontab -e` and add these lines. They run on exact 5-minute boundaries during opening hours.
 
 ```cron
-*/5 8-21 * * 1-5 cd "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Code/Fetch_Gym" && /usr/bin/python3 fetch_counts.py --open-hours-only >/dev/null 2>&1
-*/5 9-21 * * 6 cd "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Code/Fetch_Gym" && /usr/bin/python3 fetch_counts.py --open-hours-only >/dev/null 2>&1
-*/5 9-17 * * 0 cd "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Code/Fetch_Gym" && /usr/bin/python3 fetch_counts.py --open-hours-only >/dev/null 2>&1
+*/5 8-21 * * 1-5 cd "/Users/songhejun/Downloads/My_Project/Fetch_Gym" && /usr/bin/python3 fetch_counts.py --open-hours-only >/dev/null 2>&1
+*/5 9-21 * * 6 cd "/Users/songhejun/Downloads/My_Project/Fetch_Gym" && /usr/bin/python3 fetch_counts.py --open-hours-only >/dev/null 2>&1
+*/5 9-17 * * 0 cd "/Users/songhejun/Downloads/My_Project/Fetch_Gym" && /usr/bin/python3 fetch_counts.py --open-hours-only >/dev/null 2>&1
 ```
 
 This records 08:00 through 21:55 on weekdays, 09:00 through 21:55 on Saturday, and 09:00 through 17:55 on Sunday. It does not fetch at the closing minute itself.
@@ -80,7 +80,7 @@ Start a named tmux session:
 
 ```bash
 tmux new -s gym-fetch
-cd "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Code/Fetch_Gym"
+cd "/Users/songhejun/Downloads/My_Project/Fetch_Gym"
 ```
 
 Inside tmux, run the built-in loop. It waits until the next exact 5-minute boundary before fetching. During closed hours, it waits until the next opening time instead of waking up every 5 minutes.
@@ -392,16 +392,13 @@ Useful panel settings:
 After new rows are fetched into `gym_counts.sqlite3`, run the sync command again:
 
 ```bash
-rsync -avhz b12902066@ws7.csie.ntu.edu.tw:/tmp2/b12902066/Gym_Fetch/ ./
-python3 sync_to_postgres.py \
-  --sqlite-db gym_counts.sqlite3 \
-  --postgres-url postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch
+./rsync.sh pull-data
 ```
 
 For periodic local syncing, add a cron entry such as:
 
 ```cron
-*/10 * * * * cd "$HOME/Library/Mobile Documents/com~apple~CloudDocs/Code/Fetch_Gym" && /usr/bin/python3 sync_to_postgres.py --sqlite-db gym_counts.sqlite3 --postgres-url postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch >> postgres-sync.log 2>&1
+*/10 * * * * cd "/Users/songhejun/Downloads/My_Project/Fetch_Gym" && ./rsync.sh pull-data >> postgres-sync.log 2>&1
 ```
 
 ### Docker Cleanup

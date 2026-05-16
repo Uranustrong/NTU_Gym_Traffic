@@ -27,12 +27,12 @@
           },
           "query": "SELECT DISTINCT venue FROM occupancy ORDER BY venue;",
           "refresh": 1,
-          "multi": true,
-          "includeAll": true,
+          "multi": false,
+          "includeAll": false,
           "current": {
-            "selected": true,
-            "text": "All",
-            "value": "$__all"
+            "selected": false,
+            "text": "健身中心",
+            "value": "健身中心"
           }
         },
         {
@@ -130,9 +130,9 @@
       {
         "id": 2,
         "type": "table",
-        "title": "Weekly 30-Minute Occupancy Slots",
+        "title": "Weekly 30-Minute Occupancy Heatmap",
         "gridPos": {
-          "h": 12,
+          "h": 18,
           "w": 24,
           "x": 0,
           "y": 7
@@ -151,50 +151,51 @@
             "format": "table",
             "rawQuery": true,
             "editorMode": "code",
-            "rawSql": "SELECT\n  venue,\n  weekday_label,\n  slot_label,\n  CASE\n    WHEN '${metric}' = 'crowding_ratio' THEN avg_crowding_ratio\n    ELSE avg_current_count\n  END AS value,\n  sample_count\nFROM weekly_occupancy_slots\nWHERE venue IN (${venue:sqlstring})\nORDER BY venue, slot_start_time, weekday_number;"
+            "rawSql": "WITH metric_slots AS (\n  SELECT\n    weekday_number,\n    slot_start_time,\n    slot_label,\n    CASE\n      WHEN '${metric}' = 'crowding_ratio' THEN avg_crowding_ratio\n      ELSE avg_current_count\n    END AS value\n  FROM weekly_occupancy_slots\n  WHERE venue = ${venue:sqlstring}\n)\nSELECT\n  slot_label AS \"Time\",\n  MAX(value) FILTER (WHERE weekday_number = 1) AS \"Mon\",\n  MAX(value) FILTER (WHERE weekday_number = 2) AS \"Tue\",\n  MAX(value) FILTER (WHERE weekday_number = 3) AS \"Wed\",\n  MAX(value) FILTER (WHERE weekday_number = 4) AS \"Thu\",\n  MAX(value) FILTER (WHERE weekday_number = 5) AS \"Fri\",\n  MAX(value) FILTER (WHERE weekday_number = 6) AS \"Sat\",\n  MAX(value) FILTER (WHERE weekday_number = 7) AS \"Sun\"\nFROM metric_slots\nGROUP BY slot_start_time, slot_label\nORDER BY slot_start_time;"
           }
         ],
         "fieldConfig": {
           "defaults": {
             "custom": {
-              "align": "auto",
+              "align": "center",
               "cellOptions": {
-                "type": "auto"
+                "type": "color-background"
               }
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "green",
+                  "value": null
+                },
+                {
+                  "color": "yellow",
+                  "value": 40
+                },
+                {
+                  "color": "red",
+                  "value": 80
+                }
+              ]
             }
           },
           "overrides": [
             {
               "matcher": {
                 "id": "byName",
-                "options": "value"
+                "options": "Time"
               },
               "properties": [
                 {
                   "id": "custom.cellOptions",
                   "value": {
-                    "type": "color-background"
+                    "type": "auto"
                   }
                 },
                 {
-                  "id": "thresholds",
-                  "value": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "color": "green",
-                        "value": null
-                      },
-                      {
-                        "color": "yellow",
-                        "value": 40
-                      },
-                      {
-                        "color": "red",
-                        "value": 80
-                      }
-                    ]
-                  }
+                  "id": "custom.align",
+                  "value": "left"
                 }
               ]
             }
@@ -203,12 +204,7 @@
         "options": {
           "showHeader": true,
           "cellHeight": "sm",
-          "sortBy": [
-            {
-              "desc": false,
-              "displayName": "slot_label"
-            }
-          ]
+          "sortBy": []
         }
       },
       {
@@ -219,7 +215,7 @@
           "h": 10,
           "w": 24,
           "x": 0,
-          "y": 19
+          "y": 25
         },
         "datasource": {
           "type": "grafana-postgresql-datasource",
@@ -235,7 +231,7 @@
             "format": "time_series",
             "rawQuery": true,
             "editorMode": "code",
-            "rawSql": "SELECT\n  fetched_at AS \"time\",\n  venue AS metric,\n  current_count AS value\nFROM occupancy\nWHERE $__timeFilter(fetched_at)\n  AND venue IN (${venue:sqlstring})\nORDER BY fetched_at;"
+            "rawSql": "SELECT\n  fetched_at AS \"time\",\n  venue AS metric,\n  current_count AS value\nFROM occupancy\nWHERE $__timeFilter(fetched_at)\n  AND venue = ${venue:sqlstring}\nORDER BY fetched_at;"
           }
         ],
         "fieldConfig": {

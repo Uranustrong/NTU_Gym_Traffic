@@ -257,26 +257,39 @@ Grafana may open the PostgreSQL query editor in visual builder mode. If you do n
 
 Suggested dashboard variables:
 
-- `venue`: query variable, `SELECT DISTINCT venue FROM occupancy ORDER BY venue;`, enable multi-value.
+- `venue`: query variable, `SELECT DISTINCT venue FROM occupancy ORDER BY venue;`, use single-select so the weekly table can keep venue out of the grid.
 - `metric`: custom variable, values `avg_count,crowding_ratio`, default `avg_count`.
 
 Weekly 30-minute heatmap table:
 
 ```sql
+WITH metric_slots AS (
+  SELECT
+    weekday_number,
+    slot_start_time,
+    slot_label,
+    CASE
+      WHEN '${metric}' = 'crowding_ratio' THEN avg_crowding_ratio
+      ELSE avg_current_count
+    END AS value
+  FROM weekly_occupancy_slots
+  WHERE venue = ${venue:sqlstring}
+)
 SELECT
-  weekday_label,
-  slot_label,
-  CASE
-    WHEN '${metric}' = 'crowding_ratio' THEN avg_crowding_ratio
-    ELSE avg_current_count
-  END AS value,
-  sample_count
-FROM weekly_occupancy_slots
-WHERE venue IN (${venue:sqlstring})
-ORDER BY slot_start_time, weekday_number;
+  slot_label AS "Time",
+  MAX(value) FILTER (WHERE weekday_number = 1) AS "Mon",
+  MAX(value) FILTER (WHERE weekday_number = 2) AS "Tue",
+  MAX(value) FILTER (WHERE weekday_number = 3) AS "Wed",
+  MAX(value) FILTER (WHERE weekday_number = 4) AS "Thu",
+  MAX(value) FILTER (WHERE weekday_number = 5) AS "Fri",
+  MAX(value) FILTER (WHERE weekday_number = 6) AS "Sat",
+  MAX(value) FILTER (WHERE weekday_number = 7) AS "Sun"
+FROM metric_slots
+GROUP BY slot_start_time, slot_label
+ORDER BY slot_start_time;
 ```
 
-For this panel, use a `Table` visualization and enable colored cell backgrounds on `value`. This gives a weekday-by-time-slot heatmap while keeping sample counts visible.
+For this panel, use a `Table` visualization and enable colored cell backgrounds on the weekday columns. Keep `venue` as a single-select dashboard variable so the table can use weekdays as columns and time slots as rows.
 
 Current vs same weekday/time history:
 
@@ -302,7 +315,7 @@ SELECT
   current_count AS value
 FROM occupancy
 WHERE $__timeFilter(fetched_at)
-  AND venue IN (${venue:sqlstring})
+  AND venue = ${venue:sqlstring}
 ORDER BY fetched_at;
 ```
 

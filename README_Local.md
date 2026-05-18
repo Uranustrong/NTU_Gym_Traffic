@@ -231,6 +231,22 @@ Password: gym_fetch_dev
 TLS/SSL mode: disable
 ```
 
+The weekly dashboard depends on the `volkovlabs-echarts-panel` plugin (Apache ECharts wrapper) for its heatmap and timeseries panels. Install it once into the running `gym-grafana` container:
+
+```bash
+docker exec gym-grafana grafana cli plugins install volkovlabs-echarts-panel
+docker restart gym-grafana
+```
+
+Verify the plugin loaded:
+
+```bash
+curl -s -u admin:admin http://127.0.0.1:3000/api/plugins | \
+  python3 -c "import json,sys; print(any(p['id']=='volkovlabs-echarts-panel' for p in json.load(sys.stdin)))"
+```
+
+Expected: `True`.
+
 If the datasource UID is still `bfm1ctqr9jgn4b`, import the prebuilt weekly dashboard with Grafana's API:
 
 ```bash

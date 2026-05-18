@@ -117,7 +117,8 @@
                 {
                   "id": "custom.cellOptions",
                   "value": {
-                    "type": "color-background"
+                    "type": "color-background",
+                    "mode": "gradient"
                   }
                 },
                 {
@@ -126,15 +127,23 @@
                     "mode": "absolute",
                     "steps": [
                       {
-                        "color": "green",
+                        "color": "#5e7689",
                         "value": null
                       },
                       {
-                        "color": "yellow",
-                        "value": 0
+                        "color": "#bdcad4",
+                        "value": -10
                       },
                       {
-                        "color": "red",
+                        "color": "#ece5d6",
+                        "value": -3
+                      },
+                      {
+                        "color": "#d8a78a",
+                        "value": 3
+                      },
+                      {
+                        "color": "#974a3a",
                         "value": 10
                       }
                     ]

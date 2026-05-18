@@ -60,7 +60,7 @@ python3 -m unittest test_grafana_weekly_views.GrafanaWeeklyViewsTests.test_weekl
 
 **Opening-hours logic is duplicated.** Python-side in `fetch_counts.py:is_open_time()` (Mon-Fri 08-22, Sat 09-22, Sun 09-18) and SQL-side in `sql/grafana_weekly_views.sql` (the `open_slots` CTE). Changes must be applied to both, and remember the SQL side localizes UTC `fetched_at` via `AT TIME ZONE 'Asia/Taipei'` before bucketing.
 
-**Grafana dashboard is wired to a hardcoded datasource UID.** `grafana/weekly-dashboard.json` references `bfm1ctqr9jgn4b`. If the local datasource has a different UID, the curl-based import will produce panels that can't query.
+**Grafana dashboard is wired to a hardcoded datasource UID.** `grafana/weekly-dashboard.json` references `bfm1ctqr9jgn4b`. If the local datasource has a different UID, the curl-based import will produce panels that can't query. The dashboard also requires the `volkovlabs-echarts-panel` plugin (for the heatmap and timeseries panels — see `README_Local.md`) and exposes two extra template variables, `${granularity}` (`30min`/`60min`, default `60min`) and `${palette}` (`terracotta`/`sage`/`slate`/`rose`/`teal`/`lavender`, default `slate`), that are read inside the ECharts panel JS to switch SQL bucketing and color stops at render time.
 
 **SSL workaround is intentional, not a bug.** `fetch_counts.py:make_ssl_context()` clears `VERIFY_X509_STRICT` because the NTU institutional cert chain omits Subject Key Identifier extensions that OpenSSL 3.x strict mode rejects. Don't replace it with an unverified context — full chain + hostname verification is still on.
 

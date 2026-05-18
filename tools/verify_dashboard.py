@@ -41,12 +41,8 @@ def main():
         context = browser.new_context(viewport={"width": 1800, "height": 1400})
         page = context.new_page()
 
-        all_console = []
-        page.on("console", lambda m: (
-            all_console.append((m.type, m.text)),
-            console_errors.append((m.type, m.text))
-                if m.type in ("error", "warning") else None,
-        ))
+        page.on("console", lambda m: console_errors.append((m.type, m.text))
+                if m.type in ("error", "warning") else None)
         page.on("pageerror", lambda e: page_errors.append(str(e)))
         page.on("requestfailed", lambda r: request_failures.append(
             (r.url, r.failure)) if "3000" in r.url else None)
@@ -68,10 +64,6 @@ def main():
         page.screenshot(path=SCREENSHOT, full_page=True)
         browser.close()
 
-    debug_msgs = [t for tp, t in all_console if 'HEATMAP DEBUG' in t]
-    print(f"DEBUG console messages: {len(debug_msgs)}")
-    for m in debug_msgs[:5]:
-        print(f"  {m[:600]}")
     print(f"console errors/warnings: {len(console_errors)}")
     for t, msg in console_errors[:25]:
         print(f"  [{t}] {msg[:240]}")

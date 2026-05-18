@@ -45,6 +45,28 @@
             "text": "avg_count",
             "value": "avg_count"
           }
+        },
+        {
+          "name": "granularity",
+          "type": "custom",
+          "label": "Granularity",
+          "query": "30min,60min",
+          "current": {
+            "selected": true,
+            "text": "60min",
+            "value": "60min"
+          }
+        },
+        {
+          "name": "palette",
+          "type": "custom",
+          "label": "Palette",
+          "query": "terracotta,sage,slate,rose,teal,lavender",
+          "current": {
+            "selected": true,
+            "text": "slate",
+            "value": "slate"
+          }
         }
       ]
     },

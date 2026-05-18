@@ -205,7 +205,7 @@
       },
       {
         "id": 3,
-        "type": "timeseries",
+        "type": "volkovlabs-echarts-panel",
         "title": "Selected Venue Exact Counts",
         "gridPos": {
           "h": 10,
@@ -231,27 +231,20 @@
           }
         ],
         "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "drawStyle": "line",
-              "lineInterpolation": "linear",
-              "lineWidth": 2,
-              "fillOpacity": 10,
-              "showPoints": "never"
-            },
-            "unit": "short"
-          },
+          "defaults": {},
           "overrides": []
         },
         "options": {
-          "tooltip": {
-            "mode": "multi",
-            "sort": "none"
+          "getOption": "const PALETTES = {\n  terracotta: ['#ede4d4','#d8c4a0','#caa479','#b8754f','#974a3a','#642822'],\n  sage:       ['#e8e7d6','#c9d2b3','#9eb288','#728c64','#4f6948','#2e4530'],\n  slate:      ['#e6ebef','#bdcad4','#8ea1b1','#5e7689','#3d556a','#22344a'],\n  rose:       ['#ece1de','#dbb9b9','#c08e95','#9a5e72','#6d3f56','#412236'],\n  teal:       ['#dde7e5','#a8c2bf','#6fa097','#487a72','#2e5953','#1a3833'],\n  lavender:   ['#e7e1ec','#c5b4d3','#a08abb','#7e639d','#5a417a','#3a2855'],\n};\n\nconst series = data.series && data.series[0];\nif (!series || !series.fields) return {};\nconst timeF = series.fields.find(f => f.type === 'time');\nconst valF  = series.fields.find(f => f.type === 'number');\nif (!timeF || !valF) return {};\n\nconst len = (v) => (typeof v.length === 'number' ? v.length : (v.toArray ? v.toArray().length : 0));\nconst at  = (v, i) => (typeof v.get === 'function' ? v.get(i) : v[i]);\n\nconst lineColor = (PALETTES[replaceVariables('${palette}')] || PALETTES.slate)[5];\n\nconst points = [];\nfor (let i = 0; i < len(timeF.values); i++) {\n  points.push([at(timeF.values, i), at(valF.values, i)]);\n}\n\nreturn {\n  grid:    { left: 50, right: 20, top: 20, bottom: 30 },\n  xAxis:   { type: 'time', axisLabel: { color: '#aaa' } },\n  yAxis:   { type: 'value', axisLabel: { color: '#aaa' }, name: '人', nameTextStyle: { color: '#aaa' } },\n  tooltip: { trigger: 'axis', formatter: (p) => p[0].axisValueLabel + '<br/>' + p[0].value[1] + ' 人' },\n  series: [{\n    type: 'line',\n    data: points,\n    showSymbol: false,\n    lineStyle: { color: lineColor, width: 2 },\n    itemStyle: { color: lineColor },\n    areaStyle: { color: lineColor, opacity: 0.1 },\n  }],\n};\n",
+          "renderer": "canvas",
+          "themeEditor": {
+            "config": {},
+            "name": "default"
           },
-          "legend": {
-            "showLegend": true,
-            "displayMode": "list",
-            "placement": "bottom"
+          "visualEditor": {
+            "code": "",
+            "codeEditor": "svg",
+            "dataset": []
           }
         }
       }

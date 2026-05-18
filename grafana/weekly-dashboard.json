@@ -160,7 +160,7 @@
       },
       {
         "id": 2,
-        "type": "table",
+        "type": "volkovlabs-echarts-panel",
         "title": "Weekly 30-Minute Occupancy Heatmap",
         "gridPos": {
           "h": 18,
@@ -182,60 +182,25 @@
             "format": "table",
             "rawQuery": true,
             "editorMode": "code",
-            "rawSql": "WITH metric_slots AS (\n  SELECT\n    weekday_number,\n    slot_start_time,\n    slot_label,\n    CASE\n      WHEN '${metric}' = 'crowding_ratio' THEN avg_crowding_ratio\n      ELSE avg_current_count\n    END AS value\n  FROM weekly_occupancy_slots\n  WHERE venue = ${venue:sqlstring}\n)\nSELECT\n  slot_label AS \"Time\",\n  MAX(value) FILTER (WHERE weekday_number = 1) AS \"Mon\",\n  MAX(value) FILTER (WHERE weekday_number = 2) AS \"Tue\",\n  MAX(value) FILTER (WHERE weekday_number = 3) AS \"Wed\",\n  MAX(value) FILTER (WHERE weekday_number = 4) AS \"Thu\",\n  MAX(value) FILTER (WHERE weekday_number = 5) AS \"Fri\",\n  MAX(value) FILTER (WHERE weekday_number = 6) AS \"Sat\",\n  MAX(value) FILTER (WHERE weekday_number = 7) AS \"Sun\"\nFROM metric_slots\nGROUP BY slot_start_time, slot_label\nORDER BY slot_start_time;"
+            "rawSql": "WITH bucketed AS (\n  SELECT\n    weekday_number,\n    CASE WHEN '${granularity}' = '60min'\n      THEN to_char(date_trunc('hour', ('2000-01-01 '||slot_start_time)::timestamp), 'HH24:00')\n      ELSE slot_label\n    END AS slot_label,\n    CASE WHEN '${granularity}' = '60min'\n      THEN date_trunc('hour', ('2000-01-01 '||slot_start_time)::timestamp)::time\n      ELSE slot_start_time\n    END AS slot_start_time,\n    avg_current_count,\n    avg_crowding_ratio,\n    sample_count\n  FROM weekly_occupancy_slots\n  WHERE venue = ${venue:sqlstring}\n)\nSELECT\n  weekday_number,\n  slot_label,\n  slot_start_time,\n  AVG(avg_current_count)  AS avg_count,\n  AVG(avg_crowding_ratio) AS crowding_ratio,\n  SUM(sample_count)       AS sample_count\nFROM bucketed\nGROUP BY weekday_number, slot_label, slot_start_time\nORDER BY slot_start_time, weekday_number;"
           }
         ],
         "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "center",
-              "cellOptions": {
-                "type": "color-background"
-              }
-            },
-            "thresholds": {
-              "mode": "absolute",
-              "steps": [
-                {
-                  "color": "green",
-                  "value": null
-                },
-                {
-                  "color": "yellow",
-                  "value": 40
-                },
-                {
-                  "color": "red",
-                  "value": 80
-                }
-              ]
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "Time"
-              },
-              "properties": [
-                {
-                  "id": "custom.cellOptions",
-                  "value": {
-                    "type": "auto"
-                  }
-                },
-                {
-                  "id": "custom.align",
-                  "value": "left"
-                }
-              ]
-            }
-          ]
+          "defaults": {},
+          "overrides": []
         },
         "options": {
-          "showHeader": true,
-          "cellHeight": "sm",
-          "sortBy": []
+          "getOption": "const PALETTES = {\n  terracotta: ['#ede4d4','#d8c4a0','#caa479','#b8754f','#974a3a','#642822'],\n  sage:       ['#e8e7d6','#c9d2b3','#9eb288','#728c64','#4f6948','#2e4530'],\n  slate:      ['#e6ebef','#bdcad4','#8ea1b1','#5e7689','#3d556a','#22344a'],\n  rose:       ['#ece1de','#dbb9b9','#c08e95','#9a5e72','#6d3f56','#412236'],\n  teal:       ['#dde7e5','#a8c2bf','#6fa097','#487a72','#2e5953','#1a3833'],\n  lavender:   ['#e7e1ec','#c5b4d3','#a08abb','#7e639d','#5a417a','#3a2855'],\n};\n\nconst series = data.series && data.series[0];\nif (!series || !series.fields) return {};\nconst field = (n) => { const f = series.fields.find(x => x.name === n); return f ? f.values : null; };\nconst wd     = field('weekday_number');\nconst slot   = field('slot_label');\nconst cnt    = field('avg_count');\nconst ratio  = field('crowding_ratio');\nconst samp   = field('sample_count');\nif (!wd || !slot || wd.length === 0) return {};\n\nconst paletteName = replaceVariables('${palette}');\nconst stops = PALETTES[paletteName] || PALETTES.slate;\nconst metric = replaceVariables('${metric}');\n\nconst DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];\n\nconst len = (v) => (typeof v.length === 'number' ? v.length : (v.toArray ? v.toArray().length : 0));\nconst at  = (v, i) => (typeof v.get === 'function' ? v.get(i) : v[i]);\n\nconst seen = new Set();\nconst yCats = [];\nfor (let i = 0; i < len(slot); i++) {\n  const s = at(slot, i);\n  if (!seen.has(s)) { seen.add(s); yCats.push(s); }\n}\n\nconst heatData = [];\nfor (let i = 0; i < len(wd); i++) {\n  const x = at(wd, i) - 1;\n  const y = yCats.indexOf(at(slot, i));\n  const c = Math.round(at(cnt, i));\n  const r = Math.round(at(ratio, i) * 100);\n  const s = at(samp, i);\n  heatData.push([x, y, r, c, r + '%', s]);\n}\n\nconst labelIdx = metric === 'crowding_ratio' ? 4 : 3;\n\nreturn {\n  grid:    { left: 60, right: 30, top: 40, bottom: 60, containLabel: true },\n  xAxis:   { type: 'category', data: DAYS, position: 'top', axisLabel: { color: '#aaa' }, splitArea: { show: false } },\n  yAxis:   { type: 'category', data: yCats, inverse: true, axisLabel: { color: '#aaa', fontSize: 10 } },\n  visualMap: {\n    min: 0, max: 100, calculable: true,\n    orient: 'horizontal', left: 'center', bottom: 5,\n    inRange: { color: stops },\n    text: ['100%', '0%'],\n    textStyle: { color: '#aaa' },\n  },\n  tooltip: {\n    formatter: (p) => {\n      const [x, y, r, c, _rp, s] = p.data;\n      return DAYS[x] + ' ' + yCats[y] + '<br/>' +\n             'avg_count: ' + c + ' 人<br/>' +\n             'crowding_ratio: ' + r + '%<br/>' +\n             'sample_count: ' + s + ' 週';\n    },\n  },\n  series: [{\n    type: 'heatmap',\n    data: heatData,\n    label: {\n      show: true,\n      formatter: (p) => String(p.data[labelIdx]),\n      color: '#fff',\n      textBorderColor: 'rgba(0,0,0,0.55)',\n      textBorderWidth: 2,\n      fontSize: 10,\n    },\n    emphasis: { itemStyle: { borderColor: '#fff', borderWidth: 1 } },\n  }],\n};\n",
+          "renderer": "canvas",
+          "themeEditor": {
+            "config": {},
+            "name": "default"
+          },
+          "visualEditor": {
+            "code": "",
+            "codeEditor": "svg",
+            "dataset": []
+          }
         }
       },
       {

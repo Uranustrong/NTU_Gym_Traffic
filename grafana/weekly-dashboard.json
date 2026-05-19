@@ -74,7 +74,7 @@
       {
         "id": 1,
         "type": "volkovlabs-echarts-panel",
-        "title": "Current vs Same Weekday/Time History",
+        "title": "今日典型人潮 (Popular Times)",
         "gridPos": {
           "h": 9,
           "w": 24,
@@ -95,7 +95,7 @@
             "format": "table",
             "rawQuery": true,
             "editorMode": "code",
-            "rawSql": "-- refresh on: ${palette}\nSELECT\n  venue,\n  latest_fetched_at,\n  current_count,\n  historical_median_current_count,\n  difference_from_median,\n  sample_count,\n  current_crowding_ratio\nFROM current_vs_history\nORDER BY venue;"
+            "rawSql": "-- refresh on: ${palette}\nWITH today AS (\n  SELECT EXTRACT(ISODOW FROM now() AT TIME ZONE 'Asia/Taipei')::int AS wd\n),\nhourly_typical AS (\n  SELECT\n    EXTRACT(HOUR FROM slot_start_time)::int AS hour,\n    ROUND(AVG(avg_current_count))::int      AS typical_count,\n    SUM(sample_count)                       AS samples\n  FROM weekly_occupancy_slots, today\n  WHERE venue = ${venue:sqlstring}\n    AND weekday_number = today.wd\n  GROUP BY hour\n),\ncurrent_now AS (\n  SELECT DISTINCT ON (venue)\n    EXTRACT(HOUR FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS hour,\n    current_count\n  FROM occupancy\n  WHERE venue = ${venue:sqlstring}\n  ORDER BY venue, fetched_at DESC\n)\nSELECT 'typical'::text AS kind, hour, typical_count AS count, samples\nFROM hourly_typical\nUNION ALL\nSELECT 'now'::text, hour, current_count, 1\nFROM current_now\nORDER BY kind DESC, hour;"
           }
         ],
         "fieldConfig": {

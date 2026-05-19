@@ -205,6 +205,30 @@
             "dataset": []
           }
         }
+      },
+      {
+        "id": 4,
+        "type": "volkovlabs-echarts-panel",
+        "title": "venue 現況 (Live Cards)",
+        "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+        "datasource": { "type": "grafana-postgresql-datasource", "uid": "bfm1ctqr9jgn4b" },
+        "targets": [
+          {
+            "refId": "A",
+            "datasource": { "type": "grafana-postgresql-datasource", "uid": "bfm1ctqr9jgn4b" },
+            "format": "table",
+            "rawQuery": true,
+            "editorMode": "code",
+            "rawSql": "-- refresh on: ${palette}\nWITH today_start AS (\n  SELECT (date_trunc('day', now() AT TIME ZONE 'Asia/Taipei') AT TIME ZONE 'Asia/Taipei') AS ts\n),\nlatest_meta AS (\n  SELECT DISTINCT ON (venue)\n    venue, comfortable_count, capacity_count\n  FROM occupancy\n  WHERE comfortable_count IS NOT NULL OR capacity_count IS NOT NULL\n  ORDER BY venue, fetched_at DESC\n),\nreadings_today AS (\n  SELECT venue, fetched_at, current_count\n  FROM occupancy, today_start\n  WHERE fetched_at >= today_start.ts\n)\nSELECT\n  'summary'::text AS kind,\n  cvh.venue,\n  EXTRACT(EPOCH FROM cvh.latest_fetched_at) * 1000 AS ts_ms,\n  cvh.current_count,\n  cvh.historical_median_current_count   AS hist_median,\n  cvh.difference_from_median            AS diff,\n  cvh.current_crowding_ratio            AS ratio,\n  meta.comfortable_count                AS comfortable,\n  meta.capacity_count                   AS capacity\nFROM current_vs_history cvh\nLEFT JOIN latest_meta meta ON meta.venue = cvh.venue\nUNION ALL\nSELECT\n  'reading'::text, venue,\n  EXTRACT(EPOCH FROM fetched_at) * 1000,\n  current_count,\n  NULL, NULL, NULL, NULL, NULL\nFROM readings_today\nORDER BY kind DESC, venue, ts_ms;"
+          }
+        ],
+        "fieldConfig": { "defaults": {}, "overrides": [] },
+        "options": {
+          "getOption": "return {};",
+          "renderer": "canvas",
+          "themeEditor": { "config": {}, "name": "default" },
+          "visualEditor": { "code": "", "codeEditor": "svg", "dataset": [] }
+        }
       }
     ]
   },

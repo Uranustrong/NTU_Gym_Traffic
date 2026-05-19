@@ -73,7 +73,7 @@
     "panels": [
       {
         "id": 1,
-        "type": "table",
+        "type": "volkovlabs-echarts-panel",
         "title": "Current vs Same Weekday/Time History",
         "gridPos": {
           "h": 7,
@@ -95,67 +95,25 @@
             "format": "table",
             "rawQuery": true,
             "editorMode": "code",
-            "rawSql": "SELECT\n  venue,\n  latest_fetched_at,\n  current_count,\n  historical_median_current_count,\n  difference_from_median,\n  sample_count,\n  current_crowding_ratio\nFROM current_vs_history\nORDER BY venue;"
+            "rawSql": "-- refresh on: ${palette}\nSELECT\n  venue,\n  latest_fetched_at,\n  current_count,\n  historical_median_current_count,\n  difference_from_median,\n  sample_count,\n  current_crowding_ratio\nFROM current_vs_history\nORDER BY venue;"
           }
         ],
         "fieldConfig": {
-          "defaults": {
-            "custom": {
-              "align": "auto",
-              "cellOptions": {
-                "type": "auto"
-              }
-            }
-          },
-          "overrides": [
-            {
-              "matcher": {
-                "id": "byName",
-                "options": "difference_from_median"
-              },
-              "properties": [
-                {
-                  "id": "custom.cellOptions",
-                  "value": {
-                    "type": "color-background",
-                    "mode": "gradient"
-                  }
-                },
-                {
-                  "id": "thresholds",
-                  "value": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "color": "#5e7689",
-                        "value": null
-                      },
-                      {
-                        "color": "#bdcad4",
-                        "value": -3
-                      },
-                      {
-                        "color": "#ece5d6",
-                        "value": 0
-                      },
-                      {
-                        "color": "#d8a78a",
-                        "value": 3
-                      },
-                      {
-                        "color": "#974a3a",
-                        "value": 10
-                      }
-                    ]
-                  }
-                }
-              ]
-            }
-          ]
+          "defaults": {},
+          "overrides": []
         },
         "options": {
-          "showHeader": true,
-          "cellHeight": "sm"
+          "getOption": "const PALETTES = {\n  terracotta: ['#ede4d4','#d8c4a0','#caa479','#b8754f','#974a3a','#642822'],\n  sage:       ['#e8e7d6','#c9d2b3','#9eb288','#728c64','#4f6948','#2e4530'],\n  slate:      ['#e6ebef','#bdcad4','#8ea1b1','#5e7689','#3d556a','#22344a'],\n  rose:       ['#ece1de','#dbb9b9','#c08e95','#9a5e72','#6d3f56','#412236'],\n  teal:       ['#dde7e5','#a8c2bf','#6fa097','#487a72','#2e5953','#1a3833'],\n  lavender:   ['#e7e1ec','#c5b4d3','#a08abb','#7e639d','#5a417a','#3a2855'],\n};\n// Diverging uses the chosen palette on both sides — light slate/sage/rose/etc\n// indicates \"less crowded than typical\", dark indicates \"more crowded than typical\".\n// Direction is still readable from the bar going left or right of the 0 axis.\nconst NEUTRAL = '#ece5d6';\n\nconst hexToRgb = (h) => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];\nconst lerpChan = (a, b, t) => Math.round(a + (b - a) * t);\nconst blend = (a, b, t) => {\n  const ca = hexToRgb(a); const cb = hexToRgb(b);\n  return '#' + [0,1,2].map(k => lerpChan(ca[k], cb[k], t).toString(16).padStart(2, '0')).join('');\n};\nconst labelFg = (bg) => {\n  const [r,g,b] = hexToRgb(bg);\n  return (0.299*r + 0.587*g + 0.114*b) > 150 ? '#1a1a1a' : '#fafafa';\n};\nconst len = (v) => (typeof v.length === 'number' ? v.length : (v.toArray ? v.toArray().length : 0));\nconst at  = (v, i) => (typeof v.get === 'function' ? v.get(i) : v[i]);\n\nconst series = context.panel.data.series && context.panel.data.series[0];\nif (!series || !series.fields) return {};\nconst f = (n) => { const x = series.fields.find(x => x.name === n); return x ? x.values : null; };\nconst venueF = f('venue');\nconst diffF  = f('difference_from_median');\nconst countF = f('current_count');\nconst medianF= f('historical_median_current_count');\nconst ratioF = f('current_crowding_ratio');\nconst sampF  = f('sample_count');\nconst fetchF = f('latest_fetched_at');\nif (!venueF || !diffF || len(venueF) === 0) return {};\n\nconst paletteName = context.grafana.replaceVariables('${palette}');\nconst stops = PALETTES[paletteName] || PALETTES.slate;\n\n// stops layout: [light0, light1, mid-light, mid-dark, dark0, dark1]\nconst diverging = (diff) => {\n  if (diff <= -10) return stops[2];\n  if (diff <= -3)  return blend(stops[2], stops[1], (diff + 10) / 7);\n  if (diff <= 0)   return blend(stops[1], NEUTRAL,  (diff + 3) / 3);\n  if (diff <= 3)   return blend(NEUTRAL,  stops[3], diff / 3);\n  if (diff <= 10)  return blend(stops[3], stops[5], (diff - 3) / 7);\n  return stops[5];\n};\n\nconst yLabels = [];\nconst barData = [];\nconst info = [];\nfor (let i = 0; i < len(venueF); i++) {\n  const venue = at(venueF, i);\n  const count = at(countF, i);\n  const median = at(medianF, i);\n  const diff = at(diffF, i);\n  const ratio = at(ratioF, i);\n  const samples = at(sampF, i);\n  const fetched = at(fetchF, i);\n  yLabels.push(venue + '\\n' + count + '/' + Number(median).toFixed(0) + ' · ' + Math.round(ratio * 100) + '%');\n  const color = diverging(diff);\n  barData.push({\n    value: diff,\n    itemStyle: { color },\n    label: { color: labelFg(color) },\n  });\n  info.push({ venue, count, median, diff, ratio, samples, fetched });\n}\n\nreturn {\n  grid: { left: 10, right: 80, top: 20, bottom: 30, containLabel: true },\n  xAxis: {\n    type: 'value',\n    axisLabel: { color: '#888', fontSize: 10 },\n    splitLine: { lineStyle: { color: '#2a2a2a' } },\n  },\n  yAxis: {\n    type: 'category',\n    data: yLabels,\n    axisLabel: { color: '#ccc', fontSize: 11, lineHeight: 15, align: 'right', margin: 14 },\n    axisTick: { show: false },\n    axisLine: { show: false },\n  },\n  tooltip: {\n    trigger: 'item',\n    formatter: (p) => {\n      const t = info[p.dataIndex];\n      return '<b>' + t.venue + '</b><br/>' +\n             'current: ' + t.count + '<br/>' +\n             'historical median: ' + Number(t.median).toFixed(1) + '<br/>' +\n             'diff: ' + (t.diff > 0 ? '+' : '') + Number(t.diff).toFixed(2) + '<br/>' +\n             'crowding: ' + (t.ratio * 100).toFixed(1) + '%<br/>' +\n             'samples: ' + t.samples + ' weeks';\n    },\n  },\n  series: [{\n    type: 'bar',\n    data: barData,\n    barWidth: 28,\n    label: {\n      show: true,\n      position: 'inside',\n      formatter: (p) => (p.value > 0 ? '+' : '') + Number(p.value).toFixed(2),\n      fontSize: 12,\n    },\n  }],\n};\n",
+          "renderer": "canvas",
+          "themeEditor": {
+            "config": {},
+            "name": "default"
+          },
+          "visualEditor": {
+            "code": "",
+            "codeEditor": "svg",
+            "dataset": []
+          }
         }
       },
       {

@@ -1,0 +1,24 @@
+apiVersion: 1
+
+# Provisioned datasource pointing at the postgres service in the same
+# compose network. The UID `gym-postgres` is referenced by every panel in
+# `grafana/weekly-dashboard.json`.
+#
+# Host/port/db/user/password are sourced from environment variables
+# defined by docker-compose.yml (which itself reads .env).
+datasources:
+  - name: gym-postgres
+    uid: gym-postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: ${DS_PG_HOST}:${DS_PG_PORT}
+    user: ${DS_PG_USER}
+    isDefault: true
+    editable: false
+    jsonData:
+      database: ${DS_PG_DB}
+      sslmode: disable
+      postgresVersion: 1800
+      timescaledb: false
+    secureJsonData:
+      password: ${DS_PG_PASSWORD}

@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: gym-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-songhejun}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-gym_fetch}
+    ports:
+      - "5433:5432"
+    volumes:
+      # Postgres 18+ expects the mount at /var/lib/postgresql (not .../data);
+      # the image stores data in a version-numbered subdir (e.g. /var/lib/postgresql/18)
+      # so pg_upgrade --link works cleanly across major-version bumps.
+      - gym-postgres-data:/var/lib/postgresql
+      - ./sql/init/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./sql/grafana_weekly_views.sql:/docker-entrypoint-initdb.d/02_views.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:13.0.1
+    container_name: gym-grafana
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD missing in .env}
+      GF_INSTALL_PLUGINS: "volkovlabs-echarts-panel 7.2.4"
+      # Substituted into datasources.yml at provisioning time.
+      DS_PG_HOST: postgres
+      DS_PG_PORT: "5432"
+      DS_PG_DB: ${POSTGRES_DB:-gym_fetch}
+      DS_PG_USER: ${POSTGRES_USER:-songhejun}
+      DS_PG_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing in .env}
+    ports:
+      - "3000:3000"
+    volumes:
+      - gym-grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/weekly-dashboard.json:/var/lib/grafana/dashboards/weekly-dashboard.json:ro
+
+volumes:
+  gym-postgres-data:
+  gym-grafana-data:

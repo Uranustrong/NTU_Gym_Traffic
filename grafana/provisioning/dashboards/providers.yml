@@ -1,0 +1,16 @@
+apiVersion: 1
+
+# File-based dashboard provider. Grafana scans `options.path` for *.json
+# dashboard files and keeps them in sync with disk every
+# `updateIntervalSeconds`. `allowUiUpdates: false` makes the UI editor
+# read-only; flip to `true` later if you want to edit in the browser and
+# have Grafana persist edits back to disk-free state.
+providers:
+  - name: 'gym'
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 10
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

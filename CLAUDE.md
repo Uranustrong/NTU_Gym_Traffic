@@ -45,6 +45,10 @@ python3 sync_to_postgres.py \
 docker exec -i gym-postgres psql -U songhejun -d gym_fetch \
   -v ON_ERROR_STOP=1 -f - < sql/grafana_weekly_views.sql
 
+# Bring up the whole stack (Grafana + Postgres) on a clean machine
+cp .env.example .env  # then edit passwords
+docker compose up -d
+
 # Pull data + logs down from remote and re-sync into Postgres
 ./rsync.sh pull-data
 
@@ -64,7 +68,9 @@ python3 -m unittest test_grafana_weekly_views.GrafanaWeeklyViewsTests.test_weekl
 
 **Opening-hours logic is duplicated in three places.** Python-side in `fetch_counts.py:is_open_time()` (Mon-Fri 06-22, Sat 09-22, Sun 09-18); SQL-side in `sql/grafana_weekly_views.sql` (the `open_slots` CTE); and JS-side in the heatmap panel of `grafana/weekly-dashboard.json` (panel id 2's `OPEN_HOURS_MIN` table, used to label cells outside hours as "closed"). All three must stay in sync. The SQL side localizes UTC `fetched_at` via `AT TIME ZONE 'Asia/Taipei'` before bucketing.
 
-**Grafana dashboard is wired to a hardcoded datasource UID.** `grafana/weekly-dashboard.json` references `bfm1ctqr9jgn4b`. If the local datasource has a different UID, the curl-based import will produce panels that can't query. The dashboard also requires the `volkovlabs-echarts-panel` plugin (for the heatmap and timeseries panels — see `README_Local.md`) and exposes two extra template variables, `${granularity}` (`30min`/`60min`, default `60min`) and `${palette}` (`terracotta`/`sage`/`slate`/`rose`/`teal`/`lavender`, default `slate`), that are read inside the ECharts panel JS to switch SQL bucketing and color stops at render time.
+**Grafana dashboard is wired to a stable datasource UID `gym-postgres`.** `grafana/weekly-dashboard.json` references this UID and `grafana/provisioning/datasources/datasources.yml` creates it at Grafana startup. The dashboard JSON is the **bare dashboard model** (no `{"dashboard": {...}, "overwrite": true}` wrapper) because file provisioning expects that shape; do not re-wrap it. The dashboard requires the `volkovlabs-echarts-panel` plugin (auto-installed via `GF_INSTALL_PLUGINS` in `docker-compose.yml`) and exposes two extra template variables, `${granularity}` (`30min`/`60min`, default `60min`) and `${palette}` (`terracotta`/`sage`/`slate`/`rose`/`teal`/`lavender`, default `slate`), that are read inside the ECharts panel JS to switch SQL bucketing and color stops at render time.
+
+**Grafana picks up dashboard edits from disk.** `grafana/provisioning/dashboards/providers.yml` watches `/var/lib/grafana/dashboards` (bind-mounted from `grafana/weekly-dashboard.json`) every 10 s. Save the JSON, wait ten seconds, reload the browser — no curl POST. `allowUiUpdates: false` keeps the UI editor read-only; flip to `true` and `docker compose restart grafana` if you want the UI to be editable again.
 
 **The dashboard has four panels stacked top-to-bottom:** (1) `今日典型人潮` Popular Times bar chart driven by `weekly_occupancy_slots` filtered to today's `ISODOW`, with the current hour highlighted via `palette[5]`; (4) `venue 現況` two-up Live Cards with sparkline of today's `occupancy` readings and a delta-vs-historical-median row driven by `current_vs_history`; (2) `Weekly 30-Minute Occupancy Heatmap` (unchanged); (3) `Selected Venue Exact Counts` line chart (unchanged). Panel 1 and 4 both read `${venue}` and `${palette}` only — no new template variables.
 

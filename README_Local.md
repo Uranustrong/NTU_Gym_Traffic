@@ -126,138 +126,78 @@ For long-term unattended collection, `cron` is usually more reliable because it 
 
 ## Visualize With Grafana and PostgreSQL
 
-PostgreSQL is the recommended Grafana datasource for this project. Grafana includes PostgreSQL support by default, and the data stays queryable with normal SQL.
-
-The simplest local setup is to run both Grafana and PostgreSQL in Docker:
+The stack runs as a `docker compose` project: Grafana + Postgres in one command, all configuration tracked in git. Grafana provisions its datasource and dashboard from files in this repo, so a fresh checkout becomes a working dashboard with no manual UI clicks.
 
 - Grafana runs at <http://localhost:3000>
-- PostgreSQL is exposed to macOS at `127.0.0.1:5433`
-- Grafana connects to PostgreSQL through the Docker network as `gym-postgres:5432`
+- PostgreSQL is exposed to the host at `127.0.0.1:5433`
+- Inside the compose network Grafana reaches Postgres as `postgres:5432`
+- The dashboard JSON is bind-mounted from `grafana/weekly-dashboard.json` and auto-reloaded every 10 s
+- Plugin `volkovlabs-echarts-panel` 7.2.4 is auto-installed at container start
 
-Create a Docker network:
+### Prereqs
 
-```bash
-docker network create gym-net
-```
+- Docker engine (Docker Desktop, OrbStack, colima, or native Linux Docker). Compose v2 ships with all of them.
+- `psql` is **not** required on the host — the sync script can shell into the container.
 
-If Docker says `network with name gym-net already exists`, keep going.
+### Bring the stack up
 
-Start PostgreSQL:
+1. Copy `.env.example` to `.env` and edit the passwords (`.env` is git-ignored):
 
-```bash
-docker run -d \
-  --name gym-postgres \
-  --network gym-net \
-  -p 5433:5432 \
-  -e POSTGRES_USER=songhejun \
-  -e POSTGRES_PASSWORD=gym_fetch_dev \
-  -e POSTGRES_DB=gym_fetch \
-  -v gym-postgres-data:/var/lib/postgresql \
-  postgres:18
-```
+   ```bash
+   cp .env.example .env
+   # edit GRAFANA_ADMIN_PASSWORD, POSTGRES_PASSWORD
+   ```
 
-Start Grafana:
+2. (Migrating from the old manual setup) Remove any pre-existing standalone containers so they don't clash on ports 3000 / 5433:
 
-```bash
-docker run -d \
-  --name gym-grafana \
-  --network gym-net \
-  -p 3000:3000 \
-  -v gym-grafana-data:/var/lib/grafana \
-  grafana/grafana
-```
+   ```bash
+   docker rm -f gym-grafana gym-postgres 2>/dev/null || true
+   ```
 
-Open Grafana at <http://localhost:3000>. The default login is:
+   Old volumes (`gym-grafana-data`, `gym-postgres-data`) are left alone as a manual backup; compose creates project-prefixed volumes (`fetch_gym_gym-grafana-data`, `fetch_gym_gym-postgres-data`).
 
-```text
-Username: admin
-Password: admin
-```
+3. Bring up the stack. First run is slower because postgres seeds its schema and Grafana downloads the plugin.
 
-Sync the SQLite history into Docker PostgreSQL:
+   ```bash
+   docker compose up -d
+   ```
 
-```bash
-python3 sync_to_postgres.py \
-  --sqlite-db gym_counts.sqlite3 \
-  --postgres-url postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch
-```
+   On first start Postgres runs `sql/init/01_schema.sql` (creates the `occupancy` table) and `sql/grafana_weekly_views.sql` (creates the views) from the `/docker-entrypoint-initdb.d/` hook. These run **only when the data volume is empty** — later restarts skip them.
 
-If `psql` is not installed on macOS but the Docker PostgreSQL container is running, use the included wrapper:
+4. Populate the database from the remote collector:
+
+   ```bash
+   ./rsync.sh pull-data
+   ```
+
+   `rsync.sh` auto-sources `.env`, so `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` come from there; the URL `postgresql://<user>:<pass>@127.0.0.1:5433/<db>` is constructed on the fly.
+
+5. Open <http://localhost:3000/d/gym-weekly-display/gym-weekly-occupancy>. Log in with the credentials from `.env`.
+
+### Updating the dashboard
+
+Edit `grafana/weekly-dashboard.json`, save, and Grafana picks up the new version within ten seconds — no curl POST, no UI re-import. Use `tools/verify_dashboard.py` to confirm the dashboard still renders without errors:
 
 ```bash
-python3 sync_to_postgres.py \
-  --sqlite-db gym_counts.sqlite3 \
-  --postgres-url postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch \
-  --psql tools/psql_gym_postgres.sh
+python3 tools/verify_dashboard.py
 ```
 
-Apply the weekly dashboard views:
+The script reads `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` from `.env`.
+
+The dashboard JSON in this repo is the **bare dashboard model** (no `{"dashboard": {...}, "overwrite": true}` wrapper), because that's what file provisioning expects. The old curl-import API workflow no longer works against this file as-is.
+
+The provisioning provider sits in `grafana/provisioning/dashboards/providers.yml`. To allow UI edits to persist back to the running container (separate from the file on disk), flip `allowUiUpdates` to `true` there and `docker compose restart grafana`.
+
+### Inspect what got imported
 
 ```bash
-psql postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch \
-  -v ON_ERROR_STOP=1 \
-  -f sql/grafana_weekly_views.sql
-```
-
-Or apply them through the Docker PostgreSQL container:
-
-```bash
-docker exec -i gym-postgres psql -U songhejun -d gym_fetch \
-  -v ON_ERROR_STOP=1 \
-  -f - < sql/grafana_weekly_views.sql
-```
-
-The sync script uses Python standard-library modules plus the `psql` command-line client. No Python PostgreSQL package is required. It creates these PostgreSQL tables if needed:
-
-- `occupancy`: the Grafana-facing table
-- `occupancy_import`: a staging table used during sync
-
-Rows are upserted by `(fetched_at, venue)`, so running the sync multiple times updates existing rows and inserts new ones.
-
-Inspect imported rows:
-
-```bash
-psql postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch \
+docker exec -i gym-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   -c 'SELECT fetched_at, venue, current_count FROM occupancy ORDER BY fetched_at DESC LIMIT 10;'
 ```
 
-In Grafana, add a PostgreSQL datasource with:
+The sync script (`sync_to_postgres.py`) uses Python standard library plus the host `psql` if present; otherwise pass `--psql tools/psql_gym_postgres.sh` to wrap through the docker container.
 
-```text
-Host URL: gym-postgres:5432
-Database name: gym_fetch
-Username: songhejun
-Password: gym_fetch_dev
-TLS/SSL mode: disable
-```
-
-The weekly dashboard depends on the `volkovlabs-echarts-panel` plugin (Apache ECharts wrapper) for its heatmap and timeseries panels. Install it once into the running `gym-grafana` container:
-
-```bash
-docker exec gym-grafana grafana cli plugins install volkovlabs-echarts-panel
-docker restart gym-grafana
-```
-
-Verify the plugin loaded:
-
-```bash
-curl -s -u admin:admin http://127.0.0.1:3000/api/plugins | \
-  python3 -c "import json,sys; print(any(p['id']=='volkovlabs-echarts-panel' for p in json.load(sys.stdin)))"
-```
-
-Expected: `True`.
-
-If the datasource UID is still `bfm1ctqr9jgn4b`, import the prebuilt weekly dashboard with Grafana's API:
-
-```bash
-curl -s -u admin:admin \
-  -H 'Content-Type: application/json' \
-  -X POST \
-  --data @grafana/weekly-dashboard.json \
-  http://127.0.0.1:3000/api/dashboards/db
-```
-
-Then open <http://localhost:3000/d/gym-weekly-display/gym-weekly-occupancy>.
+Rows are upserted on `(fetched_at, venue)` so re-running the sync is idempotent.
 
 ### Create Grafana Panels
 
@@ -419,28 +359,37 @@ For periodic local syncing, add a cron entry such as:
 
 ### Docker Cleanup
 
-Stop the dashboard stack without deleting data:
+Stop the stack without deleting data:
 
 ```bash
-docker stop gym-grafana gym-postgres
+docker compose stop
 ```
 
 Start it again later:
 
 ```bash
-docker start gym-postgres gym-grafana
+docker compose start
 ```
 
-Remove the containers but keep their named volumes:
+Tear down containers but keep volumes (data survives):
 
 ```bash
-docker rm gym-grafana gym-postgres
+docker compose down
 ```
 
-Delete the saved PostgreSQL and Grafana data only when you are sure you no longer need it:
+Delete saved data too (irreversible):
 
 ```bash
-docker volume rm gym-postgres-data gym-grafana-data
+docker compose down -v
+```
+
+Force a re-run of the `/docker-entrypoint-initdb.d/` scripts (e.g. after editing `sql/init/01_schema.sql` or `sql/grafana_weekly_views.sql`) — only the postgres data volume needs wiping:
+
+```bash
+docker compose down
+docker volume rm fetch_gym_gym-postgres-data
+docker compose up -d
+./rsync.sh pull-data   # repopulate
 ```
 
 ### Clean Up Homebrew PostgreSQL

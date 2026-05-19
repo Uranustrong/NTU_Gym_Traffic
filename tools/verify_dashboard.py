@@ -12,14 +12,34 @@ Exits 0 if no panel-level errors detected, 1 otherwise. Always saves a
 screenshot to /tmp/gym-dash.png for visual inspection.
 """
 from playwright.sync_api import sync_playwright
+from pathlib import Path
 import argparse
+import os
 import sys
 
 URL = "http://127.0.0.1:3000"
 DASHBOARD_PATH = "/d/gym-weekly-display/gym-weekly-occupancy?orgId=1"
-USER = "admin"
-PASSWORD = "admin"
 SCREENSHOT = "/tmp/gym-dash.png"
+
+
+def _load_env_file():
+    """Load .env from the repo root into os.environ if not already set."""
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        os.environ.setdefault(k, v)
+
+
+_load_env_file()
+USER = os.environ.get("GRAFANA_ADMIN_USER", "admin")
+PASSWORD = os.environ.get("GRAFANA_ADMIN_PASSWORD", "admin")
 
 ERROR_TEXT_REGEX = (
     "ECharts Execution Error|ReferenceError|TypeError|Plugin error|"

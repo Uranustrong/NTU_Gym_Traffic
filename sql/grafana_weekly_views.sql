@@ -45,7 +45,7 @@ open_slots AS (
     WHERE
         (
             weekday_number BETWEEN 1 AND 5
-            AND slot_start_time >= TIME '08:00'
+            AND slot_start_time >= TIME '06:00'
             AND slot_start_time < TIME '22:00'
         )
         OR (

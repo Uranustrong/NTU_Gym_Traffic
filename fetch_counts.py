@@ -139,7 +139,7 @@ def is_open_time(value):
     hour = value.hour
 
     if weekday <= 4:
-        return 8 <= hour < 22
+        return 6 <= hour < 22
     if weekday == 5:
         return 9 <= hour < 22
     return 9 <= hour < 18
@@ -147,7 +147,7 @@ def is_open_time(value):
 
 def opening_hour(value):
     if value.weekday() <= 4:
-        return 8
+        return 6
     return 9
 
 

@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 輸出語言
+
+預設使用**繁體中文（台灣）**作為主要輸出語言，技術名詞、程式碼、檔案路徑、commit message、代碼註解仍維持英文。用戶習慣中英混用，回覆風格保持精簡、技術導向。
+
 ## Project shape
 
 Scrapes NTU sports center occupancy from `rent.pe.ntu.edu.tw` every 5 minutes during opening hours, stores rows in a local SQLite DB, and (optionally) syncs them into a Dockerized PostgreSQL for Grafana to visualize.

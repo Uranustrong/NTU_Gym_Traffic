@@ -54,6 +54,17 @@ CODE_EXCLUDES=(
   "--exclude=*.csv"
   "--exclude=*.log"
   "--exclude=logs/"
+  # Secrets: never push the local .env to the workstation.
+  "--exclude=.env"
+  "--exclude=.env.local"
+  # Local-only dashboard / Docker tooling — the remote only runs the
+  # collector, so these files would just sit unused.
+  "--exclude=docker-compose.yml"
+  "--exclude=grafana/"
+  "--exclude=sql/init/"
+  "--exclude=tools/verify_dashboard.py"
+  "--exclude=.bak-*"
+  "--exclude=*.bak-*"
 )
 
 pull_data() {

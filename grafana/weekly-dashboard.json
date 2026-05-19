@@ -76,7 +76,7 @@
         "type": "volkovlabs-echarts-panel",
         "title": "Current vs Same Weekday/Time History",
         "gridPos": {
-          "h": 7,
+          "h": 9,
           "w": 24,
           "x": 0,
           "y": 0
@@ -124,7 +124,7 @@
           "h": 18,
           "w": 24,
           "x": 0,
-          "y": 7
+          "y": 17
         },
         "datasource": {
           "type": "grafana-postgresql-datasource",
@@ -169,7 +169,7 @@
           "h": 10,
           "w": 24,
           "x": 0,
-          "y": 25
+          "y": 35
         },
         "datasource": {
           "type": "grafana-postgresql-datasource",

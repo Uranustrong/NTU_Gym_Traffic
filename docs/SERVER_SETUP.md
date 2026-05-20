@@ -94,12 +94,22 @@ systemctl --user daemon-reload
 systemctl --user restart docker
 ```
 
+The rootless installer ships the docker engine and CLI but **not** the Compose v2 plugin. Install it as a user-level CLI plugin (a single binary, no root needed):
+
+```bash
+mkdir -p ~/.docker/cli-plugins
+ARCH=$(uname -m)   # x86_64 on the CSIE workstations
+curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${ARCH}" \
+  -o ~/.docker/cli-plugins/docker-compose
+chmod +x ~/.docker/cli-plugins/docker-compose
+```
+
 Verify:
 
 ```bash
 docker version           # client + server both report a version
 docker info | grep -i rootless   # confirms `Cgroup Version: 2` and `rootless: true`
-docker compose version   # v2 ships with the rootless install
+docker compose version   # the Compose CLI plugin installed above
 ```
 
 If `systemctl --user start docker` fails with "Failed to connect to bus", check that linger is enabled (`loginctl show-user b12902066 | grep Linger`).

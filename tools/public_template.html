@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-TW">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="refresh" content="300">
-  <title>NTU 綜合體育館 · 每週人潮</title>
+  <title>NTU Sports Center · Weekly Occupancy</title>
   <script src="echarts.min.js"></script>
   <style>
     :root { color-scheme: dark; }
@@ -38,12 +38,12 @@
 </head>
 <body>
   <header>
-    <h1>NTU 綜合體育館 · 每週人潮</h1>
+    <h1>NTU Sports Center · Weekly Occupancy</h1>
     <div class="controls">
-      <label>場館
+      <label>Venue
         <select id="sel-venue"></select>
       </label>
-      <label>配色
+      <label>Palette
         <select id="sel-palette">
           <option value="terracotta">terracotta</option>
           <option value="sage">sage</option>
@@ -53,20 +53,20 @@
           <option value="lavender">lavender</option>
         </select>
       </label>
-      <label>粒度
+      <label>Granularity
         <select id="sel-granularity">
           <option value="30min">30min</option>
           <option value="60min" selected>60min</option>
         </select>
       </label>
-      <label>指標
+      <label>Metric
         <select id="sel-metric">
           <option value="avg_count" selected>avg_count</option>
           <option value="crowding_ratio">crowding_ratio</option>
         </select>
       </label>
     </div>
-    <div class="ts">更新於 {{GENERATED_AT}} · 每 5 分鐘自動刷新</div>
+    <div class="ts">Updated {{GENERATED_AT}} · auto-refreshes every 5 min</div>
   </header>
   <main>
     <div id="panel1" class="panel"></div>
@@ -75,8 +75,8 @@
     <div id="panel3" class="panel"></div>
   </main>
   <footer>
-    資料來源 <a href="https://rent.pe.ntu.edu.tw/">rent.pe.ntu.edu.tw</a>
-    · 開放查詢頁面,資料每 5 分鐘更新。
+    Data source <a href="https://rent.pe.ntu.edu.tw/">rent.pe.ntu.edu.tw</a>
+    · Public read-only view, refreshed every 5 minutes.
   </footer>
 
   <script>

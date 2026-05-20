@@ -224,6 +224,27 @@ ORDER BY kind DESC, venue, ts_ms;
 
 SQL_VENUES = "SELECT DISTINCT venue FROM occupancy ORDER BY venue;"
 
+# Public-page-only venue display names. The SQL always queries the real
+# (Chinese) venue strings from the DB; only the baked output is translated,
+# so Grafana keeps showing the original names. Unmapped venues fall through
+# unchanged.
+VENUE_DISPLAY = {
+    "健身中心": "Fitness Center",
+    "室內游泳池": "Indoor Pool",
+}
+
+
+def display_name(venue: str) -> str:
+    return VENUE_DISPLAY.get(venue, venue)
+
+
+def translate_field(series: dict, field_name: str, mapping: dict) -> None:
+    """In-place: remap the values of one named field in a Grafana-style series."""
+    for field in series["fields"]:
+        if field["name"] == field_name:
+            field["values"] = [mapping.get(v, v) for v in field["values"]]
+
+
 PANEL1_FIELDS = [("kind", "string", "string"), ("hour", "number", "int"),
                  ("count", "number", "int"), ("samples", "number", "int")]
 PANEL2_FIELDS = [("weekday_number", "number", "int"), ("slot_label", "string", "string"),
@@ -271,13 +292,14 @@ def main() -> int:
     except subprocess.CalledProcessError as exc:
         print(f"venue query failed: {exc.stderr or exc}", file=sys.stderr)
         return 1
-    venues = [r["venue"] for r in venue_rows]
+    venues = [r["venue"] for r in venue_rows]   # real DB names, used for SQL
     if not venues:
         print("no venues found in occupancy table", file=sys.stderr)
         return 1
 
+    # Output dict is keyed by display name; SQL still uses the real name.
     data: dict = {
-        "venues": venues,
+        "venues": [display_name(v) for v in venues],
         "panel1": {}, "panel2": {}, "panel3": {},
         "panel4": None,
         "panelJs": extract_panel_js(),
@@ -285,16 +307,19 @@ def main() -> int:
 
     try:
         for venue in venues:
-            data["panel1"][venue] = to_series(
+            dn = display_name(venue)
+            data["panel1"][dn] = to_series(
                 run_query(sql_panel1(venue), postgres_url, args.psql), PANEL1_FIELDS)
-            data["panel2"][venue] = {
+            data["panel2"][dn] = {
                 g: to_series(run_query(sql_panel2(venue, g), postgres_url, args.psql), PANEL2_FIELDS)
                 for g in ("30min", "60min")
             }
-            data["panel3"][venue] = to_series(
+            data["panel3"][dn] = to_series(
                 run_query(sql_panel3(venue, args.days), postgres_url, args.psql), PANEL3_FIELDS)
+            translate_field(data["panel3"][dn], "metric", VENUE_DISPLAY)
         data["panel4"] = to_series(
             run_query(SQL_PANEL4, postgres_url, args.psql), PANEL4_FIELDS)
+        translate_field(data["panel4"], "venue", VENUE_DISPLAY)
     except subprocess.CalledProcessError as exc:
         print(f"panel query failed: {exc.stderr or exc}", file=sys.stderr)
         return 1

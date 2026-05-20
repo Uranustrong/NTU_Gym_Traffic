@@ -150,21 +150,55 @@ off.
 
 ---
 
-## Step 4 · Bring the stack up
+## Step 4 · Bring up the containers
+
+The `docker-compose.yml` defines two services with **different roles**:
+
+| Service | Role | Required? |
+|---|---|---|
+| `gym-postgres` | The database. Both the collector sync and the public page read from it. | **Required** — everything depends on it. |
+| `gym-grafana` | Your private interactive dashboard, reached over an SSH tunnel. | **Optional** — the public page never uses it. |
+
+### 4a. Postgres — required
 
 ```bash
-docker compose up -d
+docker compose up -d postgres
 ```
 
-First-run takes a minute or two — docker pulls `postgres:18` and `grafana/grafana:13.0.1`, grafana installs the `volkovlabs-echarts-panel` 7.2.4 plugin, and postgres runs `sql/init/01_schema.sql` + `sql/grafana_weekly_views.sql` to bootstrap the schema and views.
-
-Verify:
+First run pulls `postgres:18` and runs `sql/init/01_schema.sql` + `sql/grafana_weekly_views.sql` from the `/docker-entrypoint-initdb.d/` hook to bootstrap the `occupancy` table and the views. Verify:
 
 ```bash
-docker compose ps        # both services Up, postgres healthy
+docker compose ps        # gym-postgres Up, healthy
 docker exec gym-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt"   # 2 tables
 docker exec gym-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dv"   # 2 views
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000/api/health      # 200
+```
+
+If you only want the public page and never need Grafana on the server, you can stop here and skip 4b — Steps 5–7 do not depend on Grafana.
+
+### 4b. Grafana — optional (your private dashboard)
+
+```bash
+docker compose up -d          # no service name = brings up everything, incl. Grafana
+```
+
+First run also pulls `grafana/grafana:13.0.1` and installs the `volkovlabs-echarts-panel` 7.2.4 plugin. Verify:
+
+```bash
+docker compose ps        # gym-grafana now also Up
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000/api/health   # 200
+```
+
+Grafana binds to `127.0.0.1:3000` only — it is not reachable from outside the workstation. To use it, open an SSH tunnel from your own machine:
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 <id>@ws7.csie.ntu.edu.tw
+# then browse http://localhost:3000 on your laptop
+```
+
+To later turn Grafana off without touching Postgres:
+
+```bash
+docker compose stop grafana
 ```
 
 ---
@@ -173,7 +207,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000/api/health      #
 
 Two paths depending on whether you have prior history to import:
 
-**5a. Starting from scratch.** Skip to Step 6; cron will start collecting on its own and the dashboard will populate over the following days.
+**5a. Starting from scratch.** Skip to Step 6; cron will start collecting on its own and the public page will populate over the following days.
 
 **5b. Importing existing data.** If you have a populated `gym_counts.sqlite3` (e.g. carried over from a previous workstation deployment), copy it into the repo dir and run the sync wrapper once:
 
@@ -271,7 +305,9 @@ Because we enabled `linger`, the docker user service starts automatically on boo
 
 ```bash
 systemctl --user start docker
-cd /tmp2/<id>/Gym_Fetch && docker compose up -d
+cd /tmp2/<id>/Gym_Fetch
+docker compose up -d postgres   # required
+docker compose up -d            # add this too if you also run Grafana (4b)
 ```
 
 ### Update the dashboard (panel edits, palette changes, etc.)

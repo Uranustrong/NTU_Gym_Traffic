@@ -184,7 +184,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "-- refresh on: ${palette}\nWITH params AS (\n  SELECT\n    EXTRACT(DOW  FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS dow,\n    EXTRACT(HOUR FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS hr,\n    fetched_at,\n    venue,\n    current_count\n  FROM occupancy\n  WHERE $__timeFilter(fetched_at) AND venue = ${venue:sqlstring}\n)\nSELECT\n  fetched_at AS \"time\",\n  venue       AS metric,\n  current_count AS value\nFROM params\nWHERE (dow BETWEEN 1 AND 5 AND hr >= 8 AND hr < 22)\n   OR (dow = 6              AND hr >= 9 AND hr < 22)\n   OR (dow = 0              AND hr >= 9 AND hr < 18)\nORDER BY fetched_at;"
+          "rawSql": "-- refresh on: ${palette}\nWITH params AS (\n  SELECT\n    EXTRACT(DOW  FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS dow,\n    EXTRACT(HOUR FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS hr,\n    fetched_at,\n    venue,\n    current_count\n  FROM occupancy\n  WHERE $__timeFilter(fetched_at) AND venue = ${venue:sqlstring}\n)\nSELECT\n  fetched_at AS \"time\",\n  venue       AS metric,\n  current_count AS value\nFROM params\nWHERE (dow BETWEEN 1 AND 5 AND hr >= 6 AND hr < 22)\n   OR (dow = 6              AND hr >= 9 AND hr < 22)\n   OR (dow = 0              AND hr >= 9 AND hr < 18)\nORDER BY fetched_at;"
         }
       ],
       "fieldConfig": {

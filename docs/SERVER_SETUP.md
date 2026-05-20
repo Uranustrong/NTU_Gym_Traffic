@@ -178,8 +178,8 @@ First run pulls `postgres:18` and runs `sql/init/01_schema.sql` + `sql/grafana_w
 
 ```bash
 docker compose ps        # gym-postgres Up, healthy
-docker exec gym-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt"   # 2 tables
-docker exec gym-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dv"   # 2 views
+docker exec gym-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt"'   # 2 tables
+docker exec gym-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dv"'   # 2 views
 ```
 
 If you only want the public page and never need Grafana on the server, you can stop here and skip 4b — Steps 5–7 do not depend on Grafana.
@@ -221,7 +221,7 @@ Two paths depending on whether you have prior history to import:
 **5b. Importing existing data.** If you have a populated `gym_counts.sqlite3` (e.g. carried over from a previous workstation deployment), copy it into the repo dir and run the sync wrapper once:
 
 ```bash
-cp /path/to/existing/gym_counts.sqlite3 /tmp2/b12902066Gym_Fetch/gym_counts.sqlite3
+cp /path/to/existing/gym_counts.sqlite3 /tmp2/b12902066/Gym_Fetch/gym_counts.sqlite3
 ./tools/sync_local.sh
 ```
 
@@ -233,7 +233,7 @@ You should see `synced N rows from ... to PostgreSQL`.
 
 ```bash
 # inspect / edit
-cd /tmp2/b12902066Gym_Fetch
+cd /tmp2/b12902066/Gym_Fetch
 $EDITOR crontab.example       # replace b12902066 with your account
 crontab crontab.example
 crontab -l                    # confirm it's installed
@@ -268,7 +268,7 @@ chmod 755 ~/public_html ~/public_html/gym
 ### 7b. Trigger one render manually
 
 ```bash
-cd /tmp2/b12902066Gym_Fetch
+cd /tmp2/b12902066/Gym_Fetch
 python3 tools/render_public_html.py --output-dir ~/public_html/gym --psql tools/psql_gym_postgres.sh
 ls -la ~/public_html/gym
 # expect: index.html  echarts.min.js
@@ -324,7 +324,7 @@ docker compose up -d            # add this too if you also run Grafana (4b)
 The repo's `grafana/weekly-dashboard.json` is bind-mounted into the running Grafana. Edit on the Mac, commit, then on ws7:
 
 ```bash
-cd /tmp2/b12902066Gym_Fetch
+cd /tmp2/b12902066/Gym_Fetch
 git pull
 ```
 
@@ -335,8 +335,8 @@ File-provisioning picks up the new JSON within 10 seconds — no container resta
 The `sql/init/*` and `sql/grafana_weekly_views.sql` files only run on **first** container start (data volume empty). To force re-apply after editing a view:
 
 ```bash
-docker exec -i gym-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -v ON_ERROR_STOP=1 < sql/grafana_weekly_views.sql
+docker exec -i gym-postgres sh -c \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1' < sql/grafana_weekly_views.sql
 ```
 
 To force re-apply the schema you have to wipe the postgres volume and rebackfill — usually overkill; targeted SQL via `docker exec` is enough.

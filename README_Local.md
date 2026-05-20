@@ -191,8 +191,8 @@ The provisioning provider sits in `grafana/provisioning/dashboards/providers.yml
 ### Inspect what got imported
 
 ```bash
-docker exec -i gym-postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -c 'SELECT fetched_at, venue, current_count FROM occupancy ORDER BY fetched_at DESC LIMIT 10;'
+docker exec gym-postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -c "SELECT fetched_at, venue, current_count FROM occupancy ORDER BY fetched_at DESC LIMIT 10;"'
 ```
 
 The sync script (`sync_to_postgres.py`) uses Python standard library plus the host `psql` if present; otherwise pass `--psql tools/psql_gym_postgres.sh` to wrap through the docker container.

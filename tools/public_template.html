@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="300">
+  <title>NTU 綜合體育館 · 每週人潮</title>
+  <script src="echarts.min.js"></script>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      background: #0e1117; color: #d4d4d4; margin: 0;
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+    }
+    header { padding: 20px 24px 8px; }
+    h1 { font-weight: 300; font-size: 19px; margin: 0 0 12px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+    .controls label { font-size: 12px; color: #9aa; display: flex; align-items: center; gap: 6px; }
+    .controls select {
+      background: #1b1f27; color: #d4d4d4; border: 1px solid #333;
+      border-radius: 4px; padding: 4px 8px; font-size: 12px;
+    }
+    .ts { color: #777; font-size: 11px; margin-top: 10px; }
+    main { padding: 4px 24px 24px; max-width: 1280px; margin: 0 auto; }
+    .panel {
+      background: #11151c; border: 1px solid #20242c; border-radius: 6px;
+      margin: 14px 0; padding: 4px;
+    }
+    #panel1 { height: 280px; }
+    #panel4 { height: 240px; }
+    #panel2 { height: 580px; }
+    #panel3 { height: 320px; }
+    footer { padding: 8px 24px 28px; color: #666; font-size: 11px; text-align: center; }
+    footer a { color: #888; text-decoration: none; }
+    .err { color: #c08; font-size: 12px; padding: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>NTU 綜合體育館 · 每週人潮</h1>
+    <div class="controls">
+      <label>場館
+        <select id="sel-venue"></select>
+      </label>
+      <label>配色
+        <select id="sel-palette">
+          <option value="terracotta">terracotta</option>
+          <option value="sage">sage</option>
+          <option value="slate" selected>slate</option>
+          <option value="rose">rose</option>
+          <option value="teal">teal</option>
+          <option value="lavender">lavender</option>
+        </select>
+      </label>
+      <label>粒度
+        <select id="sel-granularity">
+          <option value="30min">30min</option>
+          <option value="60min" selected>60min</option>
+        </select>
+      </label>
+      <label>指標
+        <select id="sel-metric">
+          <option value="avg_count" selected>avg_count</option>
+          <option value="crowding_ratio">crowding_ratio</option>
+        </select>
+      </label>
+    </div>
+    <div class="ts">更新於 {{GENERATED_AT}} · 每 5 分鐘自動刷新</div>
+  </header>
+  <main>
+    <div id="panel1" class="panel"></div>
+    <div id="panel4" class="panel"></div>
+    <div id="panel2" class="panel"></div>
+    <div id="panel3" class="panel"></div>
+  </main>
+  <footer>
+    資料來源 <a href="https://rent.pe.ntu.edu.tw/">rent.pe.ntu.edu.tw</a>
+    · 開放查詢頁面,資料每 5 分鐘更新。
+  </footer>
+
+  <script>
+    "use strict";
+    const DATA = {{DATA_JSON}};
+
+    const state = {
+      venue: DATA.venues[0],
+      palette: "slate",
+      granularity: "60min",
+      metric: "avg_count",
+    };
+
+    // Re-create the volkovlabs-echarts-panel plugin's `context` object so the
+    // panel JS extracted verbatim from grafana/weekly-dashboard.json runs
+    // unmodified: it reads context.panel.data.series and
+    // context.grafana.replaceVariables('${var}').
+    function makeContext(series) {
+      return {
+        panel: { data: { series: series ? [series] : [] } },
+        grafana: {
+          replaceVariables: (s) => String(s)
+            .split("${palette}").join(state.palette)
+            .split("${venue}").join(state.venue)
+            .split("${granularity}").join(state.granularity)
+            .split("${metric}").join(state.metric),
+        },
+      };
+    }
+
+    const panelFns = {};
+    for (const [id, body] of Object.entries(DATA.panelJs)) {
+      panelFns[id] = new Function("context", body);
+    }
+
+    const charts = {};
+    const PANEL_IDS = { panel1: "1", panel2: "2", panel3: "3", panel4: "4" };
+    for (const key of Object.keys(PANEL_IDS)) {
+      charts[key] = echarts.init(document.getElementById(key));
+    }
+
+    function seriesFor(panelKey) {
+      if (panelKey === "panel1") return DATA.panel1[state.venue];
+      if (panelKey === "panel2") return DATA.panel2[state.venue][state.granularity];
+      if (panelKey === "panel3") return DATA.panel3[state.venue];
+      if (panelKey === "panel4") return DATA.panel4;
+      return null;
+    }
+
+    function renderPanel(panelKey) {
+      const chart = charts[panelKey];
+      let option;
+      try {
+        option = panelFns[PANEL_IDS[panelKey]](makeContext(seriesFor(panelKey)));
+      } catch (e) {
+        console.error(panelKey + " render error:", e);
+        chart.clear();
+        return;
+      }
+      chart.setOption(option || {}, true);
+    }
+
+    function renderAll() {
+      Object.keys(PANEL_IDS).forEach(renderPanel);
+    }
+
+    // --- selectors ---
+    const venueSel = document.getElementById("sel-venue");
+    DATA.venues.forEach((v) => {
+      const opt = document.createElement("option");
+      opt.value = v; opt.textContent = v;
+      venueSel.appendChild(opt);
+    });
+    venueSel.value = state.venue;
+    venueSel.addEventListener("change", () => {
+      state.venue = venueSel.value;
+      // panel4 shows both venues, so it does not depend on venue.
+      renderPanel("panel1"); renderPanel("panel2"); renderPanel("panel3");
+    });
+
+    document.getElementById("sel-palette").addEventListener("change", (e) => {
+      state.palette = e.target.value;
+      renderAll();
+    });
+    document.getElementById("sel-granularity").addEventListener("change", (e) => {
+      state.granularity = e.target.value;
+      renderPanel("panel2");
+    });
+    document.getElementById("sel-metric").addEventListener("change", (e) => {
+      state.metric = e.target.value;
+      renderPanel("panel2");
+    });
+
+    window.addEventListener("resize", () => {
+      Object.values(charts).forEach((c) => c.resize());
+    });
+
+    renderAll();
+  </script>
+</body>
+</html>

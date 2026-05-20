@@ -9,5 +9,8 @@ if [ "$#" -gt 0 ]; then
     shift
 fi
 
-exec /opt/homebrew/bin/docker exec -i gym-postgres \
-    psql -U songhejun -d gym_fetch "$@"
+DOCKER_BIN="${DOCKER_BIN:-docker}"
+PG_USER="${POSTGRES_USER:-songhejun}"
+PG_DB="${POSTGRES_DB:-gym_fetch}"
+
+exec "$DOCKER_BIN" exec -i gym-postgres psql -U "$PG_USER" -d "$PG_DB" "$@"

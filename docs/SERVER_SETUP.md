@@ -12,7 +12,7 @@ Working document for running the entire stack — fetch collector, Postgres, Gra
 │  cron ─▶ tools/sync_local.sh ─────────┘                          │
 │                                       │                          │
 │                                       ▼                          │
-│              Rootless Docker (data-root = /tmp2/<id>/docker)     │
+│              Rootless Docker (data-root = /tmp2/b12902066/docker)     │
 │   ┌────────────────────────┐   ┌────────────────────────────┐    │
 │   │ gym-postgres :5433     │◀─▶│ gym-grafana :3000          │    │
 │   │ (127.0.0.1 only)       │   │ (127.0.0.1 only — your own │    │
@@ -29,7 +29,7 @@ Working document for running the entire stack — fetch collector, Postgres, Gra
 └──────────────────────────────────────┬───────────────────────────┘
                                        │ nginx UserDir
                                        ▼
-              https://www.csie.ntu.edu.tw/~<id>/gym/
+              https://www.csie.ntu.edu.tw/~b12902066/gym/
               (public, interactive, regenerated every 5 min)
 ```
 
@@ -40,20 +40,20 @@ does not have (versus live Grafana) is arbitrary time-range scrubbing — the
 data window is fixed at render time. Grafana itself stays internal: you reach
 it over an SSH tunnel for your own deeper exploration.
 
-Replace `<id>` with your CSIE account (e.g. `b12902066`) throughout.
+Paths and commands below are written for the account `b12902066`. If you deploy under a different CSIE account, substitute it throughout.
 
 ---
 
 ## Step 0 · Prerequisites
 
 ```bash
-ssh <id>@ws7.csie.ntu.edu.tw
-whoami            # confirm you're <id>
-echo "$HOME"      # confirm /home/<id>
-df -h /tmp2       # confirm /tmp2/<id>/ exists with enough free space
+ssh b12902066@ws7.csie.ntu.edu.tw
+whoami            # confirm you're b12902066
+echo "$HOME"      # confirm /home/b12902066
+df -h /tmp2       # confirm /tmp2/b12902066 exists with enough free space
 ```
 
-You should have ~5 GB free under `/tmp2/<id>/` (postgres data, grafana data, docker images, plus a few months of occupancy history live well under 1 GB total — the rest is image cache and headroom).
+You should have ~5 GB free under `/tmp2/b12902066` (postgres data, grafana data, docker images, plus a few months of occupancy history live well under 1 GB total — the rest is image cache and headroom).
 
 ---
 
@@ -68,16 +68,16 @@ linger-switch enable
 # 1b. allocate subuid/subgid ranges for the rootless runtime
 subuid-register
 
-# 1c. install rootless docker INTO /tmp2/<id>/docker/bin (so it lives on
+# 1c. install rootless docker INTO /tmp2/b12902066/docker/bin (so it lives on
 #     fast local storage, not your home quota)
-mkdir -p /tmp2/<id>/docker/bin
-curl -fsSL https://get.docker.com/rootless | DOCKER_BIN=/tmp2/<id>/docker/bin sh
+mkdir -p /tmp2/b12902066/docker/bin
+curl -fsSL https://get.docker.com/rootless | DOCKER_BIN=/tmp2/b12902066/docker/bin sh
 ```
 
 Append the following to `~/.bashrc` (or `~/.zshrc` if you use zsh) and `source` it:
 
 ```bash
-export PATH=/tmp2/<id>/docker/bin:$PATH
+export PATH=/tmp2/b12902066/docker/bin:$PATH
 export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
 ```
 
@@ -87,10 +87,9 @@ Tell docker to keep its data on `/tmp2` instead of `~/.local/share/docker` (whic
 mkdir -p ~/.config/docker
 cat > ~/.config/docker/daemon.json <<'EOF'
 {
-  "data-root": "/tmp2/<id>/docker"
+  "data-root": "/tmp2/b12902066/docker"
 }
 EOF
-# replace <id> in that file with your actual account, then:
 systemctl --user daemon-reload
 systemctl --user restart docker
 ```
@@ -103,14 +102,14 @@ docker info | grep -i rootless   # confirms `Cgroup Version: 2` and `rootless: t
 docker compose version   # v2 ships with the rootless install
 ```
 
-If `systemctl --user start docker` fails with "Failed to connect to bus", check that linger is enabled (`loginctl show-user <id> | grep Linger`).
+If `systemctl --user start docker` fails with "Failed to connect to bus", check that linger is enabled (`loginctl show-user b12902066 | grep Linger`).
 
 ---
 
 ## Step 2 · Clone the repo
 
 ```bash
-cd /tmp2/<id>
+cd /tmp2/b12902066
 git clone <your-git-remote> Gym_Fetch   # e.g. git@github.com:<user>/Gym_Fetch.git
 cd Gym_Fetch
 ```
@@ -191,7 +190,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3000/api/health   # 20
 Grafana binds to `127.0.0.1:3000` only — it is not reachable from outside the workstation. To use it, open an SSH tunnel from your own machine:
 
 ```bash
-ssh -N -L 3000:127.0.0.1:3000 <id>@ws7.csie.ntu.edu.tw
+ssh -N -L 3000:127.0.0.1:3000 b12902066@ws7.csie.ntu.edu.tw
 # then browse http://localhost:3000 on your laptop
 ```
 
@@ -212,7 +211,7 @@ Two paths depending on whether you have prior history to import:
 **5b. Importing existing data.** If you have a populated `gym_counts.sqlite3` (e.g. carried over from a previous workstation deployment), copy it into the repo dir and run the sync wrapper once:
 
 ```bash
-cp /path/to/existing/gym_counts.sqlite3 /tmp2/<id>/Gym_Fetch/gym_counts.sqlite3
+cp /path/to/existing/gym_counts.sqlite3 /tmp2/b12902066Gym_Fetch/gym_counts.sqlite3
 ./tools/sync_local.sh
 ```
 
@@ -224,7 +223,7 @@ You should see `synced N rows from ... to PostgreSQL`.
 
 ```bash
 # inspect / edit
-cd /tmp2/<id>/Gym_Fetch
+cd /tmp2/b12902066Gym_Fetch
 $EDITOR crontab.example       # replace b12902066 with your account
 crontab crontab.example
 crontab -l                    # confirm it's installed
@@ -259,7 +258,7 @@ chmod 755 ~/public_html ~/public_html/gym
 ### 7b. Trigger one render manually
 
 ```bash
-cd /tmp2/<id>/Gym_Fetch
+cd /tmp2/b12902066Gym_Fetch
 python3 tools/render_public_html.py --output-dir ~/public_html/gym --psql tools/psql_gym_postgres.sh
 ls -la ~/public_html/gym
 # expect: index.html  echarts.min.js
@@ -277,7 +276,7 @@ is not on `PATH`.
 Open in a browser (or `curl -I`):
 
 ```
-https://www.csie.ntu.edu.tw/~<id>/gym/
+https://www.csie.ntu.edu.tw/~b12902066/gym/
 ```
 
 Expected: a dark interactive dashboard — venue / palette / granularity / metric dropdowns all work, hover tooltips work, and the page auto-reloads every 5 minutes via the HTML `<meta http-equiv="refresh">` tag.
@@ -305,7 +304,7 @@ Because we enabled `linger`, the docker user service starts automatically on boo
 
 ```bash
 systemctl --user start docker
-cd /tmp2/<id>/Gym_Fetch
+cd /tmp2/b1290206/6Gym_Fetch
 docker compose up -d postgres   # required
 docker compose up -d            # add this too if you also run Grafana (4b)
 ```
@@ -315,7 +314,7 @@ docker compose up -d            # add this too if you also run Grafana (4b)
 The repo's `grafana/weekly-dashboard.json` is bind-mounted into the running Grafana. Edit on the Mac, commit, then on ws7:
 
 ```bash
-cd /tmp2/<id>/Gym_Fetch
+cd /tmp2/b12902066Gym_Fetch
 git pull
 ```
 
@@ -350,8 +349,8 @@ docker compose down -v
 ### Disk usage check
 
 ```bash
-du -sh /tmp2/<id>/docker
-docker system df    # per-image / per-volume breakdown
+du -sh /tmp2/b12902066/docker
+/docker system df    # per-image / per-volume breakdown
 ```
 
 If docker bloats over time:

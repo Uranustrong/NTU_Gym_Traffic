@@ -221,7 +221,7 @@ Two paths depending on whether you have prior history to import:
 **5b. Importing existing data.** If you have a populated `gym_counts.sqlite3` (e.g. carried over from a previous workstation deployment), copy it into the repo dir and run the sync wrapper once:
 
 ```bash
-cp /path/to/existing/gym_counts.sqlite3 /tmp2/b12902066/Gym_Fetch/gym_counts.sqlite3
+cp /tmp2/b12902066/Gym_Fetch.old/gym_counts.sqlite3 /tmp2/b12902066/Gym_Fetch/gym_counts.sqlite3
 ./tools/sync_local.sh
 ```
 
@@ -241,9 +241,11 @@ crontab -l                    # confirm it's installed
 
 `crontab.example` installs three jobs:
 
-1. `fetch_counts.py` every 5 min during open hours (Mon-Fri 06-22, Sat 09-22, Sun 09-18)
-2. `tools/sync_local.sh` every 10 min (offset 2 min) — pushes new SQLite rows into Postgres
-3. `tools/render_public_html.py` every 5 min — regenerates the public page
+1. `fetch_counts.py` every 5 min during open hours (Mon-Fri 06-22, Sat 09-22, Sun 09-18), on the minute
+2. `tools/sync_local.sh` every 5 min, 2 min after each fetch — pushes new SQLite rows into Postgres
+3. `tools/render_public_html.py` every 5 min, 4 min after each fetch — regenerates the public page
+
+The three stages are staggered (`:00` fetch → `:02` sync → `:04` render) so a new occupancy reading reaches the public page within about 4–5 minutes.
 
 Tail the logs to confirm jobs run as expected:
 

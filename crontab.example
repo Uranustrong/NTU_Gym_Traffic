@@ -3,13 +3,20 @@
 # Inspect with:  crontab -l
 # Edit with:     crontab -e
 #
-# Adjust the ID in the paths to match your CSIE account. The paths assume
-# the repo is at /tmp2/<id>/Gym_Fetch and the public HTML directory is at
-# /home/<id>/public_html/gym.
+# Paths assume the repo is at /tmp2/b12902066/Gym_Fetch. If your CSIE
+# account differs, adjust the ID in PATH and in the paths below.
 
 SHELL=/bin/bash
-PATH=/usr/local/bin:/usr/bin:/bin
+# Rootless docker lives under /tmp2/<id>/docker/bin and is NOT on the default
+# cron PATH — prepend it so tools/sync_local.sh and the render job can find
+# the `docker` binary. (DOCKER_HOST is derived automatically by
+# tools/psql_gym_postgres.sh, so it does not need to be set here.)
+PATH=/tmp2/b12902066/docker/bin:/usr/local/bin:/usr/bin:/bin
 MAILTO=
+
+# The pipeline is staggered so each stage runs after the previous one:
+#   :00 fetch  ->  :02 sync sqlite->postgres  ->  :04 render public page
+# New occupancy readings reach the public page within ~4-5 minutes.
 
 # ---------------------------------------------------------------------------
 # 1. Collector: fetch_counts.py every 5 minutes during sports-center open
@@ -21,16 +28,16 @@ MAILTO=
 */5 9-17 * * 0   cd /tmp2/b12902066/Gym_Fetch && /usr/bin/python3 fetch_counts.py --open-hours-only >> logs/cron.log 2>&1
 
 # ---------------------------------------------------------------------------
-# 2. Sync sqlite -> postgres every 10 minutes (offset 2 min so it never
-#    races with the collector). tools/sync_local.sh sources .env so the
-#    postgres URL is not hard-coded here.
+# 2. Sync sqlite -> postgres every 5 minutes, 2 min after each fetch.
+#    tools/sync_local.sh sources .env, so the postgres URL is not hard-coded
+#    here. Idempotent upsert — harmless when there is nothing new.
 # ---------------------------------------------------------------------------
-2-58/10 * * * * /tmp2/b12902066/Gym_Fetch/tools/sync_local.sh >> /tmp2/b12902066/Gym_Fetch/logs/sync.log 2>&1
+2-59/5 * * * * /tmp2/b12902066/Gym_Fetch/tools/sync_local.sh >> /tmp2/b12902066/Gym_Fetch/logs/sync.log 2>&1
 
 # ---------------------------------------------------------------------------
-# 3. Public page: regenerate the interactive static dashboard into
-#    ~/public_html/gym/ every 5 minutes so nginx UserDir can serve it as:
-#    https://www.csie.ntu.edu.tw/~b12902066/gym/
+# 3. Public page: regenerate the interactive static dashboard every 5 minutes,
+#    4 min after each fetch (2 min after the sync), into ~/public_html/gym/ so
+#    nginx UserDir serves it as https://www.csie.ntu.edu.tw/~b12902066/gym/
 #    Pure stdlib + psql — no headless browser needed.
 # ---------------------------------------------------------------------------
-*/5 * * * * cd /tmp2/b12902066/Gym_Fetch && /usr/bin/python3 tools/render_public_html.py --output-dir /home/b12902066/public_html/gym --psql tools/psql_gym_postgres.sh >> logs/render.log 2>&1
+4-59/5 * * * * cd /tmp2/b12902066/Gym_Fetch && /usr/bin/python3 tools/render_public_html.py --output-dir ~/public_html/gym --psql tools/psql_gym_postgres.sh >> logs/render.log 2>&1

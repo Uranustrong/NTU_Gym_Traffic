@@ -83,4 +83,6 @@ python3 -m unittest test_grafana_weekly_views.GrafanaWeeklyViewsTests.test_weekl
 - Timestamps stored as ISO strings with timezone (`datetime.now().astimezone().replace(second=0, microsecond=0).isoformat()`). Rows are aligned to the minute, not the second.
 - SQLite `.bak-*` files in the repo root are produced by `rsync.sh` — they're snapshots of the previous local DB before an rsync overwrote it. Safe to delete; git-ignored.
 - Don't commit `*.sqlite3`, `*.csv`, or anything under `logs/` — all ignored.
+- Cron jobs run through `tools/cronlog.sh`, which writes per-day logs to `logs/<YYYY-MM>/<YYYY-MM-DD>-<name>.log` (`<name>` = `cron`/`sync`/`render`). The cron fetch passes `--no-log-file` so `fetch_counts.py`'s own `DailyLogStream` (`logs/<YYYY-MM-DD>.log`) is left for interactive runs only.
 - Plans/specs from the `superpowers` workflow live under `docs/superpowers/` and the brainstorming scratch under `.superpowers/brainstorm/` (ignored).
+- Deferred features and undecided design calls are tracked in `docs/TODO.md` (the feature backlog) — consult it before starting feature work, and move items out when they ship.

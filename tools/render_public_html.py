@@ -11,7 +11,7 @@ static page.
 
 Run from cron every 5 minutes, e.g.:
     */5 * * * * /tmp2/<id>/Gym_Fetch/tools/render_public_html.py \\
-        --output-dir /home/<id>/public_html/gym
+        --output-dir /home/<id>/htdocs/gym
 
 Single source of truth: the panel rendering JS is read at runtime from
 `grafana/weekly-dashboard.json`, so editing a panel in Grafana automatically
@@ -133,11 +133,20 @@ current_now AS (
     EXTRACT(HOUR FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS hour,
     current_count
   FROM occupancy WHERE venue = {v}
+    AND fetched_at >= now() - interval '30 minutes'
   ORDER BY venue, fetched_at DESC
+),
+day_count AS (
+  SELECT count(DISTINCT (fetched_at AT TIME ZONE 'Asia/Taipei')::date) AS n
+  FROM occupancy, today
+  WHERE venue = {v}
+    AND EXTRACT(ISODOW FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int = today.wd
 )
 SELECT 'typical'::text AS kind, hour, typical_count AS count, samples FROM hourly_typical
 UNION ALL
 SELECT 'now'::text, hour, current_count, 1 FROM current_now
+UNION ALL
+SELECT 'meta'::text, NULL::int, n::int, NULL::int FROM day_count
 ORDER BY kind DESC, hour;
 """
 
@@ -190,8 +199,8 @@ ORDER BY fetched_at;
 
 
 SQL_PANEL4 = """
-WITH today_start AS (
-  SELECT (date_trunc('day', now() AT TIME ZONE 'Asia/Taipei') AT TIME ZONE 'Asia/Taipei') AS ts
+WITH last_day AS (
+  SELECT max((fetched_at AT TIME ZONE 'Asia/Taipei')::date) AS d FROM occupancy
 ),
 latest_meta AS (
   SELECT DISTINCT ON (venue) venue, comfortable_count, capacity_count
@@ -199,10 +208,10 @@ latest_meta AS (
   WHERE comfortable_count IS NOT NULL OR capacity_count IS NOT NULL
   ORDER BY venue, fetched_at DESC
 ),
-readings_today AS (
+readings_recent AS (
   SELECT venue, fetched_at, current_count
-  FROM occupancy, today_start
-  WHERE fetched_at >= today_start.ts
+  FROM occupancy, last_day
+  WHERE (fetched_at AT TIME ZONE 'Asia/Taipei')::date = last_day.d
 )
 SELECT 'summary'::text AS kind, cvh.venue,
   EXTRACT(EPOCH FROM cvh.latest_fetched_at) * 1000 AS ts_ms,
@@ -218,7 +227,7 @@ UNION ALL
 SELECT 'reading'::text, venue,
   EXTRACT(EPOCH FROM fetched_at) * 1000,
   current_count, NULL, NULL, NULL, NULL, NULL
-FROM readings_today
+FROM readings_recent
 ORDER BY kind DESC, venue, ts_ms;
 """
 
@@ -272,7 +281,7 @@ def extract_panel_js() -> dict[str, str]:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--output-dir", required=True,
-                   help="Directory to write index.html into (e.g. ~/public_html/gym).")
+                   help="Directory to write index.html into (e.g. ~/htdocs/gym).")
     p.add_argument("--postgres-url", default=None,
                    help="Override the postgres URL (default: built from .env).")
     p.add_argument("--psql", default="psql",

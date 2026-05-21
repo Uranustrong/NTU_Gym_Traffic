@@ -1,6 +1,6 @@
 # Server Setup on a CSIE Workstation (ws7)
 
-Working document for running the entire stack — fetch collector, Postgres, Grafana, and a public-facing read-only dashboard — on a CSIE NASA-Lab workstation. The workstation policy requires **rootless Docker**, and Grafana cannot be exposed directly to the internet, so the public endpoint is a self-contained interactive HTML page (regenerated every 5 minutes by cron) served by the workstation's nginx `UserDir`.
+Working document for running the entire stack — fetch collector, Postgres, Grafana, and a public-facing read-only dashboard — on a CSIE NASA-Lab workstation. The workstation policy requires **rootless Docker**, and Grafana cannot be exposed directly to the internet, so the public endpoint is a self-contained interactive HTML page (regenerated every 5 minutes by cron) served from `~/htdocs/` by CSIE's central web server via its per-user `UserDir`.
 
 ## What you'll end up with
 
@@ -23,7 +23,7 @@ Working document for running the entire stack — fetch collector, Postgres, Gra
 │               │  (pure stdlib + psql; bakes data + the same      │
 │               │   ECharts panel code into one static HTML)       │
 │               ▼                                                  │
-│                       ~/public_html/gym/                         │
+│                       ~/htdocs/gym/                              │
 │                       ├── index.html    (interactive, dark)      │
 │                       └── echarts.min.js (bundled, no CDN)       │
 └──────────────────────────────────────┬───────────────────────────┘
@@ -49,7 +49,7 @@ Paths and commands below are written for the account `b12902066`. If you deploy 
 ```bash
 ssh b12902066@ws7.csie.ntu.edu.tw
 whoami            # confirm you're b12902066
-echo "$HOME"      # confirm /home/b12902066
+echo "$HOME"      # CSIE home, e.g. /home/student/12/b12902066
 df -h /tmp2       # confirm /tmp2/b12902066 exists with enough free space
 ```
 
@@ -74,12 +74,24 @@ mkdir -p /tmp2/b12902066/docker/bin
 curl -fsSL https://get.docker.com/rootless | DOCKER_BIN=/tmp2/b12902066/docker/bin sh
 ```
 
-Append the following to `~/.bashrc` (or `~/.zshrc` if you use zsh) and `source` it:
+Make `docker` reachable from every interactive shell. On a CSIE workstation
+the per-user shell file is `~/.shrc`, not `~/.bashrc` — `~/.bashrc` sources it
+(`. $HOME/.shrc`) and `~/.profile` registers it (`export ENV="$HOME/.shrc"`),
+so `~/.shrc` is the one place that covers login shells, non-login shells, and
+plain `sh`. Append:
 
-```bash
-export PATH=/tmp2/b12902066/docker/bin:$PATH
+```sh
+## Rootless Docker (NASA-Lab workstation)
+case ":$PATH:" in
+  *:/tmp2/b12902066/docker/bin:*) ;;
+  *) export PATH=/tmp2/b12902066/docker/bin:$PATH ;;
+esac
 export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
 ```
+
+Then `source ~/.shrc` (or open a new shell). The `case` guard stops `PATH`
+from stacking duplicate entries — `~/.shrc` runs on *every* interactive shell,
+not just at login.
 
 Tell docker to keep its data on `/tmp2` instead of `~/.local/share/docker` (which would eat your home quota):
 
@@ -247,10 +259,11 @@ crontab -l                    # confirm it's installed
 
 The three stages are staggered (`:00` fetch → `:02` sync → `:04` render) so a new occupancy reading reaches the public page within about 4–5 minutes.
 
-Tail the logs to confirm jobs run as expected:
+Tail today's logs to confirm jobs run as expected — cron splits them by date
+under `logs/<YYYY-MM>/` via `tools/cronlog.sh`:
 
 ```bash
-tail -f logs/cron.log logs/sync.log logs/render.log
+tail -f logs/"$(date +%Y-%m)/$(date +%Y-%m-%d)"-*.log
 ```
 
 ---
@@ -261,18 +274,25 @@ The public page generator (`tools/render_public_html.py`) is pure Python standar
 
 ### 7a. Create the public directory
 
+CSIE serves `https://www.csie.ntu.edu.tw/~ACCOUNT/` from `~/htdocs/` — a
+directory provisioned in your home at account creation. `www.csie.ntu.edu.tw`
+is a central server, **not** ws7 itself; but CSIE home directories are
+NFS-shared, so a file written under `~/htdocs/` on ws7 is exactly what that
+server serves. (`~/public_html` is *not* the UserDir — content there is never
+served.)
+
 ```bash
-mkdir -p ~/public_html/gym
-chmod 711 ~                                 # nginx needs +x on $HOME
-chmod 755 ~/public_html ~/public_html/gym
+mkdir -p ~/htdocs/gym
+chmod 711 ~                          # web server needs +x on $HOME
+chmod 755 ~/htdocs ~/htdocs/gym
 ```
 
 ### 7b. Trigger one render manually
 
 ```bash
 cd /tmp2/b12902066/Gym_Fetch
-python3 tools/render_public_html.py --output-dir ~/public_html/gym --psql tools/psql_gym_postgres.sh
-ls -la ~/public_html/gym
+python3 tools/render_public_html.py --output-dir ~/htdocs/gym --psql tools/psql_gym_postgres.sh
+ls -la ~/htdocs/gym
 # expect: index.html  echarts.min.js
 ```
 
@@ -304,7 +324,7 @@ So a fresh occupancy reading reaches a public visitor within roughly 5–10 minu
 
 ### 7e. Cron is already wired (Step 6)
 
-The third cron line re-renders the page every 5 minutes. From now on `~/public_html/gym/` stays current as long as docker + cron are running.
+The third cron line re-renders the page every 5 minutes. From now on `~/htdocs/gym/` stays current as long as docker + cron are running.
 
 ---
 
@@ -391,8 +411,8 @@ docker volume prune
 | Container exits with "permission denied" on bind mount | Subuid/subgid not registered — re-run `subuid-register`, log out, log back in |
 | `pg_isready` healthcheck never goes healthy | First-time init can take 30-60s on slow disks; if it stays unhealthy, check `docker logs gym-postgres` for SQL errors in init scripts |
 | Public page panels are blank but no JS error | The relevant query returned no rows — e.g. `Popular Times` on a weekday with no history yet. Grafana shows the same gap. Resolves as data accumulates. |
-| Public page charts don't render at all / blank white | `echarts.min.js` missing from the output dir — re-run `render_public_html.py` (it copies the bundle), confirm `ls ~/public_html/gym` shows both files |
-| Public URL returns 403 | `chmod 711 ~ && chmod 755 ~/public_html` and verify nginx UserDir is enabled on this host |
+| Public page charts don't render at all / blank white | `echarts.min.js` missing from the output dir — re-run `render_public_html.py` (it copies the bundle), confirm `ls ~/htdocs/gym` shows both files |
+| Public URL returns 403 / `此帳號目前沒有公開內容` | Content must live under `~/htdocs/` — CSIE's per-user `UserDir`, not `~/public_html`. Confirm `~/htdocs/gym/index.html` exists, then `chmod 711 ~ && chmod 755 ~/htdocs ~/htdocs/gym`. |
 | Public page data looks stale | The render cron has not run since the data changed. The page bakes data at render time; trigger `tools/render_public_html.py` by hand to force a refresh (see Step 7d). |
 | Disk filling under `/tmp2` | Old `gym_counts.sqlite3.bak-*` files from the Mac's rsync — those land here only if you pushed code from local. Safe to `rm`. |
 | `subprocess.CalledProcessError: ... psql: error: invalid percent-encoded token` | Your `.env` password has reserved URL chars; `tools/sync_local.sh` handles encoding, so confirm cron actually calls the wrapper (not raw `sync_to_postgres.py`) |

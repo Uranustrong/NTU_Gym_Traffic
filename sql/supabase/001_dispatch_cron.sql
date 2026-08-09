@@ -161,9 +161,25 @@ select cron.schedule('collect-saturday',        '*/5 1-13 * * 6',
 select cron.schedule('collect-sunday',          '*/5 1-9 * * 0',
                      $job$select ops.dispatch_workflow('collect.yml')$job$);
 
--- publish is deliberately left on GitHub's own schedule. A missed render is
--- recoverable -- the next one shows the same data -- whereas a missed reading
--- is gone for good. Moving collect off GitHub's scheduler should also leave
--- more of the repository's cap for publish to use.
+-- publish rides the same windows two minutes behind, at 2,7,...,57.
+--
+-- The offset is the whole point. A render fired on the same tick as a
+-- collection races it: the run takes about fifteen seconds to fetch, validate
+-- and commit, so a publish starting at the same instant would read the table
+-- just before the new row lands and ship a page that is a full cycle stale --
+-- consistently, not occasionally. Two minutes is far more than the gap needs
+-- to be and costs nothing.
+--
+-- Nothing extra is needed after closing time. The last collection of the day
+-- is at :55 and this renders it at :57, so the page settles on the final
+-- reading instead of the second-to-last one.
+select cron.schedule('publish-weekday-early',   '2-57/5 22-23 * * 0-4',
+                     $job$select ops.dispatch_workflow('publish.yml')$job$);
+select cron.schedule('publish-weekday-main',    '2-57/5 0-13 * * 1-5',
+                     $job$select ops.dispatch_workflow('publish.yml')$job$);
+select cron.schedule('publish-saturday',        '2-57/5 1-13 * * 6',
+                     $job$select ops.dispatch_workflow('publish.yml')$job$);
+select cron.schedule('publish-sunday',          '2-57/5 1-9 * * 0',
+                     $job$select ops.dispatch_workflow('publish.yml')$job$);
 
 select jobid, jobname, schedule, active from cron.job order by jobname;

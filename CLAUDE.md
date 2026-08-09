@@ -22,9 +22,11 @@ Three workflows, all verified end to end on 2026-08-09:
 
 | Workflow | Cadence (Taipei) | Woken by | Role | Port |
 |---|---|---|---|---|
-| `collect.yml` | every 5 min at `:03…:58`, opening hours only | Supabase `pg_cron`, with GitHub's own schedule as fallback | `gym_writer` | 6543 |
-| `publish.yml` | every 15 min at `:10,:25,:40,:55`, plus once after closing | GitHub schedule | `gym_reader` | 6543 |
-| `backup.yml` | Mondays 04:20 | GitHub schedule | `gym_reader` | **5432** |
+| `collect.yml` | every 5 min at `:00,:05…:55`, opening hours only | Supabase `pg_cron`, GitHub schedule as fallback | `gym_writer` | 6543 |
+| `publish.yml` | every 5 min at `:02,:07…:57` | Supabase `pg_cron`, GitHub schedule as fallback | `gym_reader` | 6543 |
+| `backup.yml` | Mondays 04:20 | GitHub schedule only | `gym_reader` | **5432** |
+
+Publish trails collect by two minutes on purpose: a run takes ~15 s to fetch, validate and commit, so rendering on the same tick would consistently ship a page one cycle stale rather than occasionally.
 
 The public page is live at **https://uranustrong.github.io/NTU_Gym_Traffic/** (Pages source is *GitHub Actions*, not a branch).
 
@@ -116,7 +118,7 @@ Two of the five test files are **destructive integration tests**. `dbtest_suppor
 
 ## Architecture notes that span multiple files
 
-**Supabase wakes the collector; GitHub's own schedule is only the fallback.** GitHub delivered roughly one scheduled run every 22 minutes against a nominal 5, alternating between `collect` and `publish` as though the cap were per repository, and the interval was not converging after an hour. Manual dispatches, by contrast, started instantly every time — five for five. So `sql/supabase/001_dispatch_cron.sql` puts four `pg_cron` jobs on Supabase that call `ops.dispatch_workflow('collect.yml')`, which `pg_net` turns into a `workflow_dispatch` POST. Nothing about the collector itself changed; only what wakes it.
+**Supabase wakes the collector; GitHub's own schedule is only the fallback.** GitHub delivered roughly one scheduled run every 22 minutes against a nominal 5, alternating between `collect` and `publish` as though the cap were per repository, and the interval was not converging after an hour. Manual dispatches, by contrast, started instantly every time — five for five. So `sql/supabase/001_dispatch_cron.sql` puts eight `pg_cron` jobs on Supabase that call `ops.dispatch_workflow(...)`, which `pg_net` turns into a `workflow_dispatch` POST. Nothing about the collector or the renderer changed; only what wakes them.
 
 Three consequences to keep in mind:
 

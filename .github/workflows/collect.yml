@@ -1,15 +1,28 @@
 name: collect
 
-# Smoke-test stage (plan section B1): manual dispatch only, no schedule yet.
-#
-# Everything else in this migration was verifiable from a laptop. One thing is
-# not: whether GitHub's Azure egress can reach rent.pe.ntu.edu.tw at all. If
-# NTU blocks off-campus or overseas traffic, no amount of YAML fixes it, so the
-# schedule block goes in only after a manual run has proved the whole path --
-# fetch, parse, TLS workaround, writer credential, RLS window, transaction
-# pooler -- end to end.
+# Replaces the ws7 crontab. The B1 smoke test (run 31297029524, 2026-08-09)
+# proved the path GitHub -> rent.pe.ntu.edu.tw -> Supabase works end to end,
+# so the schedule can go on top of it.
 
 on:
+  schedule:
+    # Taipei local time, not UTC -- the `timezone` key means the hour fields
+    # below can be read against the posted opening hours directly.
+    #
+    # Minutes are 3,8,...,58 rather than 0,5,...,55: GitHub names every whole
+    # hour as a high-load window where queued jobs are delayed or dropped, and
+    # :00 is the worst offender. The cost is the 06:00-06:02 reading on
+    # weekdays, which the old */5 crontab did collect.
+    #
+    # These windows are the outer bound. is_open_time() in fetch_counts.py is
+    # what actually decides, so an over-firing cron costs a no-op run, never a
+    # wrong row.
+    - cron: "3-59/5 6-21 * * 1-5"    # Mon-Fri 06:03-21:58
+      timezone: "Asia/Taipei"
+    - cron: "3-59/5 9-21 * * 6"      # Sat     09:03-21:58
+      timezone: "Asia/Taipei"
+    - cron: "3-59/5 9-17 * * 0"      # Sun     09:03-17:58
+      timezone: "Asia/Taipei"
   workflow_dispatch:
     inputs:
       force:

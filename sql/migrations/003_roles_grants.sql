@@ -1,0 +1,62 @@
+-- 003: least-privilege roles for the GitHub Actions workflows.
+--
+-- Reads the two role passwords straight from the environment with \getenv, so
+-- they never appear in the psql command line where `ps` could show them --
+-- the same reason sync_to_postgres.py relies on PGPASSWORD rather than
+-- embedding a password in the URL. Apply with an owner-level credential.
+--
+--   gym_writer  -> collect.yml.  SELECT + INSERT on occupancy, nothing else.
+--   gym_reader  -> publish.yml, backup.yml (data-only pg_dump), local Grafana.
+--                  Read-only.
+--   owner       -> migrations and backfills that need DO UPDATE. Backups do
+--                  NOT use it: they dump only public.occupancy as gym_reader.
+--
+-- Why gym_writer gets SELECT: sync_to_postgres.py verifies its own writes
+-- inside the transaction by joining the staged rows against occupancy. The
+-- data is published on a public page anyway, so read access costs nothing.
+--
+-- Why gym_writer does NOT get UPDATE: a leaked credential with UPDATE plus a
+-- permissive policy could rewrite every historical count to zero. That is as
+-- destructive as DELETE and just as silent. Routine collection only ever
+-- appends, so ON CONFLICT DO NOTHING is sufficient.
+
+\getenv gym_writer_password GYM_WRITER_PASSWORD
+\getenv gym_reader_password GYM_READER_PASSWORD
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gym_writer') THEN
+        CREATE ROLE gym_writer LOGIN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gym_reader') THEN
+        CREATE ROLE gym_reader LOGIN;
+    END IF;
+END $$;
+
+ALTER ROLE gym_writer PASSWORD :'gym_writer_password';
+ALTER ROLE gym_reader PASSWORD :'gym_reader_password';
+
+GRANT USAGE ON SCHEMA public TO gym_writer, gym_reader;
+
+-- The TEMP staging table needs this. PUBLIC holds TEMPORARY by default on
+-- stock PostgreSQL, but that is revoked on some hardened installs, so grant
+-- it explicitly. The database name differs per environment (postgres on
+-- Supabase, gym_fetch under docker compose), hence format().
+DO $$
+BEGIN
+    EXECUTE format('GRANT TEMPORARY ON DATABASE %I TO gym_writer',
+                   current_database());
+END $$;
+
+GRANT SELECT, INSERT ON public.occupancy TO gym_writer;
+GRANT USAGE, SELECT ON SEQUENCE public.occupancy_id_seq TO gym_writer;
+
+GRANT SELECT ON public.occupancy TO gym_reader;
+GRANT SELECT ON public.weekly_occupancy_slots TO gym_reader;
+GRANT SELECT ON public.current_vs_history TO gym_reader;
+
+-- Belt and braces: strip anything a previous, more permissive setup granted.
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON public.occupancy FROM gym_writer;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
+    ON public.occupancy FROM gym_reader;

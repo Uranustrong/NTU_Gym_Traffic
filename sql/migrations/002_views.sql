@@ -1,0 +1,1 @@
+../grafana_weekly_views.sql

@@ -17,8 +17,13 @@ services:
       # the image stores data in a version-numbered subdir (e.g. /var/lib/postgresql/18)
       # so pg_upgrade --link works cleanly across major-version bumps.
       - gym-postgres-data:/var/lib/postgresql
-      - ./sql/init/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./sql/grafana_weekly_views.sql:/docker-entrypoint-initdb.d/02_views.sql:ro
+      # Schema and views come straight from sql/migrations/ so there is only
+      # one definition to keep correct. Roles/RLS (003, 004) are deliberately
+      # not mounted: they need passwords passed as psql variables, which the
+      # initdb hook cannot supply, and local development does not need them.
+      # Run tools/apply_migrations.sh against the container if you do.
+      - ./sql/migrations/001_occupancy.sql:/docker-entrypoint-initdb.d/001_occupancy.sql:ro
+      - ./sql/grafana_weekly_views.sql:/docker-entrypoint-initdb.d/002_views.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s

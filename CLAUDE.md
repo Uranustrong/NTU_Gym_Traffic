@@ -12,14 +12,17 @@ Scrapes NTU sports center occupancy from `rent.pe.ntu.edu.tw` every 5 minutes du
 
 Pure Python standard library — no third-party packages. `requirements.txt` is intentionally empty.
 
-## Two deployment paths, one codebase
+## Deployment: mid-migration, ws7 is gone
 
-The same code runs in two places, and the two READMEs reflect that:
+The ws7 collector no longer exists. It ran out of `/tmp2/b12902066/Gym_Fetch`, machine-local scratch space that was wiped around **2026-08-08 03:29**, taking the Postgres container and roughly 48% of the collected history with it. Verified afterwards: no crontab on ws3 or ws7, no `/var/spool/cron/crontabs/`, nothing left in `$HOME`. Only the static public page at `~/htdocs/gym/index.html` survived, because it lives in the NFS home rather than in scratch.
 
-- **`README_Server.md`** — the *remote* collector at `b12902066@ws7.csie.ntu.edu.tw:/tmp2/b12902066/Gym_Fetch`, where cron runs `fetch_counts.py` on 5-minute boundaries during opening hours.
-- **`README_Local.md`** — the *local* mac mirror at `/Users/songhejun/Downloads/My_Project/Fetch_Gym`, which pulls the remote SQLite via `rsync.sh` and syncs into local Docker PostgreSQL + Grafana.
+The project is being moved to **GitHub Actions + Supabase**; the approved plan is [`docs/plan/2026-08-09-github-actions-supabase-migration.md`](docs/plan/2026-08-09-github-actions-supabase-migration.md).
 
-`rsync.sh pull-data` is the bridge: it takes a `sqlite3 .backup` snapshot on the remote, rsyncs it down (versioning the prior local DB as `*.bak-<timestamp>`), then auto-runs `sync_to_postgres.py` if present.
+**Phase A is only partly done — do not cut over.** The parts that needed no cloud account are complete: A0 recovery, A1 sync refactor, A5 fetch hardening, A8 migrations. Three pre-cutover blockers are still open because they all require the Supabase project to exist first: **A4** (data-only backup plus a rehearsed restore), **A6** (measuring whether `COPY ... FROM STDIN` survives the transaction pooler on :6543), **A7** (repointing the local Grafana datasource at `gym_reader` over TLS). Phase B — Supabase project, secrets, workflows, GitHub Pages — has not started. There is no collector running anywhere right now.
+
+`docs/recovery/` holds the archived page and the 2,444 rows rebuilt from it. Reconstructed rows are identifiable by `source_updated_at IS NULL` — every row written by the real collector has that column populated.
+
+**Stale docs, do not trust yet:** `README_Server.md` and `README_Local.md` still describe the ws7 + rsync setup and still claim weekday opening is 08:00; `docs/SERVER_SETUP.md` says the UserDir root is `~/public_html` when CSIE actually serves `~/htdocs`. `rsync.sh`, `tools/sync_local.sh`, `tools/psql_gym_postgres.sh` and `crontab.example` are all vestiges of that deployment. Rewriting them is follow-up item D3 in the plan.
 
 ## Common commands
 
@@ -27,46 +30,78 @@ The same code runs in two places, and the two READMEs reflect that:
 # One-shot fetch into gym_counts.sqlite3 (no logging to file)
 python3 fetch_counts.py --no-log-file
 
+# What the collector workflow runs: refuse a partial page or a frozen source
+python3 fetch_counts.py --no-log-file --open-hours-only \
+  --expect-venues 健身中心,室內游泳池
+
 # Long-running, aligned-to-5min, skips closed hours
 python3 fetch_counts.py --loop --open-hours-only
 
-# Sync SQLite → Postgres (Docker setup uses port 5433 on host)
-python3 sync_to_postgres.py \
+# Create/refresh schema, views, roles and RLS (owner credential)
+export PGPASSWORD='...' GYM_WRITER_PASSWORD='...' GYM_READER_PASSWORD='...'
+tools/apply_migrations.sh postgresql://songhejun@127.0.0.1:5433/gym_fetch
+tools/apply_migrations.sh --skip-roles postgresql://...   # schema + views only
+
+# Sync SQLite → Postgres. Leave the password out of the URL; libpq reads
+# PGPASSWORD from the environment, which keeps it out of `ps`.
+PGPASSWORD='...' python3 sync_to_postgres.py \
   --sqlite-db gym_counts.sqlite3 \
-  --postgres-url postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch
+  --postgres-url postgresql://songhejun@127.0.0.1:5433/gym_fetch
+
+# Backfill or repair existing rows (needs an owner credential)
+PGPASSWORD='...' python3 sync_to_postgres.py --on-conflict update \
+  --sqlite-db gym_counts.sqlite3 --postgres-url postgresql://...
 
 # Same, but when host has no psql — wrap through Docker
 python3 sync_to_postgres.py \
   --sqlite-db gym_counts.sqlite3 \
-  --postgres-url postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch \
+  --postgres-url postgresql://songhejun@127.0.0.1:5433/gym_fetch \
   --psql tools/psql_gym_postgres.sh
-
-# Apply Grafana SQL views into Postgres
-docker exec -i gym-postgres psql -U songhejun -d gym_fetch \
-  -v ON_ERROR_STOP=1 -f - < sql/grafana_weekly_views.sql
 
 # Bring up the whole stack (Grafana + Postgres) on a clean machine
 cp .env.example .env  # then edit passwords
 docker compose up -d
 
-# Pull data + logs down from remote and re-sync into Postgres
-./rsync.sh pull-data
+# Rebuild the recovered 2026-08-01..08-07 rows from the archived public page
+python3 tools/recover_from_public_page.py \
+  --page docs/recovery/gym-page-2026-08-08.html --sqlite gym_counts.sqlite3
 
-# Tests
-python3 -m unittest test_sync_to_postgres.py
-python3 -m unittest test_grafana_weekly_views.py   # requires running gym-postgres
-python3 -m unittest test_grafana_weekly_views.GrafanaWeeklyViewsTests.test_weekly_slots_bucket_30_minutes_and_open_hours
+# Tests. The DB integration tests skip unless explicitly armed, so this is
+# always safe to run.
+python3 -m unittest discover -p 'test_*.py'
+
+# Arming them. TEST_POSTGRES_URL is separate from POSTGRES_URL on purpose:
+# these tests DROP schemas and roles, and an exported POSTGRES_URL for real
+# work must never be enough to point them at a live database.
+TEST_POSTGRES_URL=postgresql://songhejun@127.0.0.1:5433/gym_fetch \
+ALLOW_DESTRUCTIVE_DB_TESTS=1 python3 -m unittest discover -p 'test_*.py'
 ```
 
-`test_grafana_weekly_views.py` is an **integration test** — it requires either a local `psql` or the `gym-postgres` Docker container running. It builds a throwaway `grafana_weekly_test` schema, applies `sql/grafana_weekly_views.sql` against it, asserts, and drops the schema. Override the connection with `POSTGRES_URL=...`.
+Two of the five test files are **destructive integration tests**. `dbtest_support.py` gates them: it needs `TEST_POSTGRES_URL` *and* `ALLOW_DESTRUCTIVE_DB_TESTS=1`, refuses managed hosts (`*.supabase.co`, `*.rds.amazonaws.com`, …) unless `ALLOW_DESTRUCTIVE_DB_TESTS_ON_REMOTE=1` is also set, and suffixes every schema and role name per process so nothing can collide with a real object. They skip rather than fail when unarmed:
+
+- `test_sync_to_postgres_integration.py` — proves what mocks cannot: that PostgreSQL accepts the generated script, that the inline `COPY` payload survives psql's own line splitting, and that a failed verification rolls the **whole** transaction back. Works inside a throwaway schema selected via libpq's `options=-csearch_path=`.
+- `test_grafana_weekly_views.py` — builds a throwaway schema, applies `sql/grafana_weekly_views.sql`, asserts, drops it.
 
 ## Architecture notes that span multiple files
 
-**The schema lives in two places and must stay in sync.** `fetch_counts.py:connect()` defines the SQLite `occupancy` table; `sync_to_postgres.py:SCHEMA_SQL` defines the Postgres equivalent plus a `(fetched_at, venue)` unique index used for `ON CONFLICT` upsert. Adding a column means editing both, plus the column tuple in `OCCUPANCY_COLUMNS`, the `COPY` column list, and the `read_sqlite_rows` SELECT.
+**The schema lives in two places and must stay in sync.** `fetch_counts.py:connect()` defines the SQLite `occupancy` table; `sql/migrations/001_occupancy.sql` defines the Postgres equivalent plus the `(fetched_at, venue)` unique index that drives `ON CONFLICT`. Adding a column means editing both, plus the `OCCUPANCY_COLUMNS` tuple in `sync_to_postgres.py` — that one tuple now generates the `COPY` list, the `INSERT` list and the `read_sqlite_rows` SELECT, so there is nothing else to update.
 
-**Sync uses staging + upsert, not direct insert.** `sync_to_postgres.py` shells out to `psql` three times — create-tables/truncate-staging, `COPY ... FROM STDIN` the full SQLite contents into `occupancy_import`, then `INSERT ... ON CONFLICT DO UPDATE` from staging into `occupancy`. This makes re-syncs idempotent and avoids a Python Postgres driver dependency.
+**Postgres state is version-controlled, not clicked into a SQL editor.** `sql/migrations/*.sql` is applied in filename order by `tools/apply_migrations.sh`: `001` the table, `002` the views (a symlink to `sql/grafana_weekly_views.sql`, which keeps its own path because tests, docs and `docker-compose.yml` all reference it), `003` the `gym_writer`/`gym_reader` roles, `004` RLS and policies. Every file is idempotent. `docker-compose.yml` mounts `001` and `002` into `docker-entrypoint-initdb.d` — roles and RLS are skipped there because the initdb hook cannot supply the password psql variables.
 
-**Opening-hours logic is duplicated in three places.** Python-side in `fetch_counts.py:is_open_time()` (Mon-Fri 06-22, Sat 09-22, Sun 09-18); SQL-side in `sql/grafana_weekly_views.sql` (the `open_slots` CTE); and JS-side in the heatmap panel of `grafana/weekly-dashboard.json` (panel id 2's `OPEN_HOURS_MIN` table, used to label cells outside hours as "closed"). All three must stay in sync. The SQL side localizes UTC `fetched_at` via `AT TIME ZONE 'Asia/Taipei'` before bucketing.
+**Sync is one psql session, one transaction, and verifies itself.** `sync_to_postgres.py` builds a single script — `BEGIN`, `CREATE TEMP TABLE occupancy_import ... ON COMMIT DROP`, an inline `COPY ... FROM STDIN` payload terminated by `\.`, `INSERT ... ON CONFLICT`, a `DO $$` block that fails the transaction unless every staged row is present with matching values, `COMMIT` — and feeds it to `psql -f -`. Four consequences worth knowing:
+
+- Staging is session-local, so concurrent runs cannot truncate each other's rows. The previous design used a shared `public.occupancy_import` across three connections; interleaved runs silently dropped a reading and still printed success.
+- Retries are safe. A commit whose response was lost re-runs, hits the conflict clause, writes nothing, and still passes verification.
+- No DDL is needed on `public`, which is what lets the collector run as a SELECT+INSERT-only role.
+- `rows_to_csv()` must emit `\n`, not the csv module's default `\r\n`: psql splits the embedded payload into lines itself, and a surviving CR corrupts the last column.
+
+Default conflict strategy is `DO NOTHING` (collection only appends). `--on-conflict update` switches to `DO UPDATE` for backfills and repairs, and needs an owner credential because `gym_writer` has no UPDATE privilege and RLS confines its inserts to roughly the last hour.
+
+**Opening-hours logic is duplicated in four places.** Python-side in `fetch_counts.py:is_open_time()` (Mon-Fri 06-22, Sat 09-22, Sun 09-18); SQL-side in `sql/grafana_weekly_views.sql` (the `open_slots` CTE, using ISODOW 1-7); JS-side in the heatmap panel of `grafana/weekly-dashboard.json` (panel id 2's `OPEN_HOURS_MIN` table, used to label cells outside hours as "closed"); and again in SQL in `tools/render_public_html.py:sql_panel3()`. All four must stay in sync. The SQL sides localize `fetched_at` via `AT TIME ZONE 'Asia/Taipei'` before bucketing.
+
+**Weekday opening really is 06:00, not the 08:00 the website advertises.** `rent.pe.ntu.edu.tw` lists 08:00-22:00 for the 綜合體育館 *building*, but 健身中心 is populated from 06:00 on every weekday in the collected history (06:00 typically 6-17 people, 07:00 typically 19-34). Commit `28a4ae6` corrected this on purpose; "fixing" it back to 08:00 discards two hours of real data every weekday.
+
+**Timezone is pinned, never inherited.** `fetch_counts.py` uses `now_taipei()` (`zoneinfo.ZoneInfo("Asia/Taipei")`), not `datetime.now().astimezone()`. `is_open_time()` compares bare hour numbers, so on a UTC host — every GitHub Actions runner — inheriting the host clock would make `--open-hours-only` skip nearly every scheduled run without erroring. Stored rows carry an explicit `+08:00` offset and the Postgres column is `TIMESTAMPTZ`, so this affects decisions, not stored history.
 
 **Grafana dashboard is wired to a stable datasource UID `gym-postgres`.** `grafana/weekly-dashboard.json` references this UID and `grafana/provisioning/datasources/datasources.yml` creates it at Grafana startup. The dashboard JSON is the **bare dashboard model** (no `{"dashboard": {...}, "overwrite": true}` wrapper) because file provisioning expects that shape; do not re-wrap it. The dashboard requires the `volkovlabs-echarts-panel` plugin (auto-installed via `GF_INSTALL_PLUGINS` in `docker-compose.yml`) and exposes two extra template variables, `${granularity}` (`30min`/`60min`, default `60min`) and `${palette}` (`terracotta`/`sage`/`slate`/`rose`/`teal`/`lavender`, default `slate`), that are read inside the ECharts panel JS to switch SQL bucketing and color stops at render time.
 

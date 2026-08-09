@@ -1,53 +1,40 @@
-import os
-import shutil
-import subprocess
+"""Integration tests for sql/grafana_weekly_views.sql.
+
+DESTRUCTIVE: creates and drops a schema. Guarded by dbtest_support, which
+requires TEST_POSTGRES_URL plus ALLOW_DESTRUCTIVE_DB_TESTS=1 and ignores the
+general-purpose POSTGRES_URL.
+
+    TEST_POSTGRES_URL=postgresql://songhejun@127.0.0.1:5433/gym_fetch \\
+    ALLOW_DESTRUCTIVE_DB_TESTS=1 \\
+        python3 -m unittest test_grafana_weekly_views
+
+The old `docker exec gym-postgres` fallback is gone: it reached a database
+without going through any of these checks, and with the container running you
+can point TEST_POSTGRES_URL at 127.0.0.1:5433 instead.
+"""
 import textwrap
 import unittest
 from pathlib import Path
 
+from dbtest_support import destructive_tests_blocked, run_psql, scoped_name
 
-POSTGRES_URL = os.environ.get(
-    "POSTGRES_URL",
-    "postgresql://songhejun:gym_fetch_dev@127.0.0.1:5433/gym_fetch",
-)
+
 VIEW_SQL = Path(__file__).with_name("sql").joinpath("grafana_weekly_views.sql")
 
-
-def run_psql(script):
-    if shutil.which("psql"):
-        command = ["psql", POSTGRES_URL, "-v", "ON_ERROR_STOP=1", "-qAt"]
-    else:
-        command = [
-            "/opt/homebrew/bin/docker",
-            "exec",
-            "-i",
-            "gym-postgres",
-            "psql",
-            "-U",
-            "songhejun",
-            "-d",
-            "gym_fetch",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-qAt",
-        ]
-
-    return subprocess.run(
-        command,
-        input=script,
-        text=True,
-        check=True,
-        capture_output=True,
-    ).stdout.strip()
+# Per-process name, so a leftover from an interrupted run cannot collide with
+# anything the database depends on.
+TEST_SCHEMA = scoped_name("grafana_weekly_test")
+BLOCKED = destructive_tests_blocked()
 
 
+@unittest.skipIf(BLOCKED, BLOCKED or "")
 class GrafanaWeeklyViewsTests(unittest.TestCase):
     def run_fixture_query(self, query):
         script = textwrap.dedent(
             f"""
-            DROP SCHEMA IF EXISTS grafana_weekly_test CASCADE;
-            CREATE SCHEMA grafana_weekly_test;
-            SET search_path TO grafana_weekly_test;
+            DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE;
+            CREATE SCHEMA {TEST_SCHEMA};
+            SET search_path TO {TEST_SCHEMA};
 
             CREATE TABLE occupancy (
                 id BIGSERIAL PRIMARY KEY,
@@ -79,7 +66,7 @@ class GrafanaWeeklyViewsTests(unittest.TestCase):
 
             {query}
 
-            DROP SCHEMA grafana_weekly_test CASCADE;
+            DROP SCHEMA {TEST_SCHEMA} CASCADE;
             """
         )
         return run_psql(script)

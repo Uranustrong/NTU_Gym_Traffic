@@ -695,7 +695,7 @@ SELECT count(*) FROM (
 
 2. **`source_updated_at` 去重**（C2(d) 顯示有重複才做）：INSERT 加 anti-join guard + `CREATE INDEX ix_occupancy_venue_src ON occupancy (venue, source_updated_at)`。
 
-3. **文件收尾。** [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md) 全篇把 UserDir 寫成 `~/public_html`（含 `chmod 755 ~/public_html ~/public_html/gym`），但 CSIE 實際的根目錄是 **`~/htdocs`** —— 這份 runbook 照著做會建出一個永遠不被服務的目錄。[README_Server.md:48-62](README_Server.md#L48-L62) 與 [README_Local.md:50-64](README_Local.md#L50-L64) 仍寫平日 `08:00-22:00` 與 `*/5 8-21`，且 README_Local 的路徑還是舊的 `Fetch_Gym`；這兩份描述的部署方式遷移後已不存在，應改寫而非小修。`CLAUDE.md:69` 的「duplicated in three places」要改成 **four**（漏了 `tools/render_public_html.py:sql_panel3`）。`git remote set-url origin git@github.com:Uranustrong/NTU_Gym_Traffic.git`（目前還是舊名 `Fetch_Gym`，靠 GitHub redirect）。
+3. **文件收尾。** （`docs/SERVER_SETUP.md` 的 UserDir 已由 commit `3666b87` 於 2026-05-21 修正為 `~/htdocs`，不需再處理；但它整份描述的仍是已不存在的 ws7 部署。）[README_Server.md:48-62](README_Server.md#L48-L62) 與 [README_Local.md:50-64](README_Local.md#L50-L64) 仍寫平日 `08:00-22:00` 與 `*/5 8-21`，且 README_Local 的路徑還是舊的 `Fetch_Gym`；這兩份描述的部署方式遷移後已不存在，應改寫而非小修。`CLAUDE.md:69` 的「duplicated in three places」要改成 **four**（漏了 `tools/render_public_html.py:sql_panel3`）。`git remote set-url origin git@github.com:Uranustrong/NTU_Gym_Traffic.git`（目前還是舊名 `Fetch_Gym`，靠 GitHub redirect）。
 
 4. **個人網站接法**：讓瀏覽器透過 PostgREST + anon key 直接查 Supabase（配合 A3 的 `security_invoker` + 唯讀 policy），頁面只 deploy 一次就永遠即時，可完全取代 15 分鐘重新渲染。
 

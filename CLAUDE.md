@@ -22,7 +22,7 @@ The project is being moved to **GitHub Actions + Supabase**; the approved plan i
 
 `docs/recovery/` holds the archived page and the 2,444 rows rebuilt from it. Reconstructed rows are identifiable by `source_updated_at IS NULL` — every row written by the real collector has that column populated.
 
-**Stale docs, do not trust yet:** `README_Server.md` and `README_Local.md` still describe the ws7 + rsync setup and still claim weekday opening is 08:00; `docs/SERVER_SETUP.md` says the UserDir root is `~/public_html` when CSIE actually serves `~/htdocs`. `rsync.sh`, `tools/sync_local.sh`, `tools/psql_gym_postgres.sh` and `crontab.example` are all vestiges of that deployment. Rewriting them is follow-up item D3 in the plan.
+**Stale docs, do not trust yet:** `README_Server.md` and `README_Local.md` still describe the ws7 + rsync setup and still claim weekday opening is 08:00. `rsync.sh`, `tools/sync_local.sh`, `tools/psql_gym_postgres.sh`, `tools/cronlog.sh` and `crontab.example` are all vestiges of that deployment. Rewriting them is follow-up item D3 in the plan. (`docs/SERVER_SETUP.md` is accurate about the UserDir — commit `3666b87` corrected it to `~/htdocs` — but it still documents a deployment that no longer exists.)
 
 ## Common commands
 

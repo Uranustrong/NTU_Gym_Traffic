@@ -1,0 +1,207 @@
+name: backup
+
+# Supabase's Free plan has no daily backup and no PITR. Before the migration
+# there were at least a SQLite file and three dozen .bak-* snapshots on a
+# laptop; afterwards the only copy is in one managed database. This workflow is
+# what replaces that, and it also carries the keepalive that stops GitHub from
+# disabling the schedules.
+#
+# Weekly, at an hour when nothing is collecting, so the dump and the row count
+# it is checked against cannot race a write.
+
+on:
+  schedule:
+    - cron: "20 4 * * 1"
+      timezone: "Asia/Taipei"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # keepalive commit, and the rolling data release
+  actions: write    # re-enable collect if GitHub ever disables it
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TZ: Asia/Taipei
+      PG_URL: ${{ secrets.SUPABASE_READER_URL }}
+      PGCONNECT_TIMEOUT: "15"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Match pg_dump to the server
+        # psql is version-tolerant; pg_dump is not, and refuses outright when
+        # the server is newer than it is. The runner image ships whatever
+        # client it ships, so ask the server and install to match rather than
+        # pinning a version here that silently rots.
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_READER_PASSWORD }}
+          PGPORT: "5432"
+          PGSSLMODE: ${{ vars.PG_SSLMODE }}
+        run: |
+          set -euo pipefail
+          major=$(psql "$PG_URL" -X -A -t \
+                  -c "SELECT current_setting('server_version_num')::int / 10000;")
+          echo "server is PostgreSQL $major"
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /usr/share/keyrings/pgdg.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-client-${major}"
+          # Address the binary by path. Relying on PATH order would silently
+          # pick up whichever client the image already had.
+          echo "PGBIN=/usr/lib/postgresql/${major}/bin" >> "$GITHUB_ENV"
+          echo "PG_MAJOR=${major}" >> "$GITHUB_ENV"
+
+      - name: Dump public.occupancy
+        # Deliberately not an owner dump of the whole database. That would drag
+        # in Supabase's auth and storage schemas, and this artifact is
+        # downloadable by anyone with read access to a public repo. The
+        # occupancy table is already published on the public page; nothing else
+        # in the database is.
+        #
+        # --enable-row-security is required, not optional: without it pg_dump
+        # aborts with "query would be affected by row-level security policy"
+        # once RLS is on -- and leaves a plausible-looking partial file behind.
+        env:
+          PGPASSWORD: ${{ secrets.SUPABASE_READER_PASSWORD }}
+          # Session pooler, not the 6543 used by collect and publish: pg_dump
+          # needs a real session -- it holds a repeatable-read snapshot across
+          # many statements, which transaction pooling does not preserve.
+          PGPORT: "5432"
+          PGSSLMODE: ${{ vars.PG_SSLMODE }}
+        run: |
+          set -euo pipefail
+          stamp=$(date +%F)
+          dump="occupancy-${stamp}.dump"
+          before=$(psql "$PG_URL" -X -A -t -c "SELECT count(*) FROM occupancy;")
+          "$PGBIN/pg_dump" "$PG_URL" \
+            --format=custom --data-only \
+            --table=public.occupancy \
+            --no-owner --no-privileges \
+            --enable-row-security \
+            -f "$dump"
+          bytes=$(wc -c < "$dump")
+          echo "live rows: $before, dump: $bytes bytes"
+          # Both historical failures -- the sequence permission error and the
+          # RLS refusal -- exited non-zero but still left a file, once 0 bytes
+          # and once 1.5 KB. A size floor catches that class instantly; the
+          # restore below is what actually proves the file is usable.
+          if [ "$bytes" -lt 10000 ]; then
+            echo "::error::dump is only $bytes bytes for $before rows"
+            exit 1
+          fi
+          echo "DUMP_FILE=$dump" >> "$GITHUB_ENV"
+          echo "ROWS_BEFORE=$before" >> "$GITHUB_ENV"
+
+      - name: Restore it into an empty database and count
+        # An unrehearsed backup is not a backup. This is the drill from the
+        # plan, run every week instead of once: build a database from
+        # sql/migrations/ alone, load the dump into it, and require the row
+        # count to come back.
+        run: |
+          set -euo pipefail
+          docker run -d --name drill \
+            -e POSTGRES_PASSWORD=drill -e POSTGRES_DB=drill \
+            -p 5432:5432 "postgres:${PG_MAJOR}" >/dev/null
+          for _ in $(seq 1 45); do
+            if PGPASSWORD=drill psql -h 127.0.0.1 -U postgres -d drill \
+                 -X -q -c 'SELECT 1' >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          export PGPASSWORD=drill PGSSLMODE=disable
+          drill_url="postgresql://postgres@127.0.0.1:5432/drill"
+          # --skip-roles: a throwaway database has no gym_writer/gym_reader to
+          # grant to, and 003/004 would demand their passwords.
+          tools/apply_migrations.sh --skip-roles "$drill_url"
+          "$PGBIN/pg_restore" --data-only --no-owner --no-privileges \
+            -d "$drill_url" "$DUMP_FILE"
+          restored=$(psql "$drill_url" -X -A -t -c "SELECT count(*) FROM occupancy;")
+          echo "restored $restored rows (live was $ROWS_BEFORE)"
+          # Greater-or-equal rather than equal: the count was taken before the
+          # dump, so a collection landing in between can only add rows. At this
+          # hour nothing is collecting and they should match exactly.
+          if [ "$restored" -lt "$ROWS_BEFORE" ]; then
+            echo "::error::restored $restored rows but the database held $ROWS_BEFORE"
+            exit 1
+          fi
+          docker rm -f drill >/dev/null
+
+      - name: Keep the dump
+        uses: actions/upload-artifact@v7
+        with:
+          name: occupancy-dump-${{ github.run_id }}
+          path: ${{ env.DUMP_FILE }}
+          retention-days: 90
+
+      - name: Refresh the rolling CSV release
+        # Artifacts expire after 90 days and need a GitHub login to fetch. A
+        # release asset has a stable public URL and no expiry, which is what
+        # makes it the off-site copy of last resort.
+        #
+        # One rolling tag rather than a dated release per week: the table is
+        # append-only, so the newest export contains every earlier one and a
+        # year of dated releases would only add clutter.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PGPASSWORD: ${{ secrets.SUPABASE_READER_PASSWORD }}
+          PGPORT: "5432"
+          PGSSLMODE: ${{ vars.PG_SSLMODE }}
+        run: |
+          set -euo pipefail
+          psql "$PG_URL" -X -q -c "\copy (SELECT fetched_at, source_updated_at, venue, current_count, comfortable_count, capacity_count FROM occupancy ORDER BY fetched_at, venue) TO STDOUT WITH (FORMAT csv, HEADER)" \
+            | gzip -9 > occupancy.csv.gz
+          echo "csv.gz: $(wc -c < occupancy.csv.gz) bytes"
+          # printf rather than a multi-line string: inside a YAML block scalar
+          # the continuation lines would carry their own indentation into the
+          # release notes.
+          notes=$(printf '%s\n' \
+            "NTU sports center occupancy, every row as of $(date +%F) ($ROWS_BEFORE readings)." \
+            "" \
+            "Columns: fetched_at, source_updated_at, venue, current_count, comfortable_count, capacity_count." \
+            "Rows with an empty source_updated_at were reconstructed from an archived copy of the public page; see docs/recovery/." \
+            "Refreshed weekly by .github/workflows/backup.yml.")
+          if gh release view data-latest >/dev/null 2>&1; then
+            gh release upload data-latest occupancy.csv.gz --clobber
+            gh release edit data-latest --notes "$notes"
+          else
+            gh release create data-latest occupancy.csv.gz \
+              --title "Occupancy data (latest)" --notes "$notes"
+          fi
+
+      - name: Keepalive
+        # Workflow runs are not repository activity. A public repo with no
+        # commits for 60 days has its schedules disabled no matter how many
+        # times they fired, and this repo had already gone 80 days before the
+        # migration started. An empty weekly commit resets that clock.
+        #
+        # A push by GITHUB_TOKEN deliberately does not trigger workflows, so
+        # this cannot loop.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --quiet origin main
+          git reset --quiet --hard origin/main
+          git commit --allow-empty -q -m "chore: keepalive $(date -u +%FT%TZ)"
+          # Branch protection, if it is ever turned on, rejects GITHUB_TOKEN
+          # pushes. Say so loudly rather than letting the schedules quietly die
+          # 60 days later.
+          if ! git push --quiet origin HEAD:main; then
+            echo "::error::keepalive push rejected -- schedules will be disabled after 60 idle days"
+            exit 1
+          fi
+          # Belt and braces. Harmless if collect is already enabled.
+          gh api -X PUT \
+            "repos/${{ github.repository }}/actions/workflows/collect.yml/enable" \
+            >/dev/null 2>&1 || echo "note: could not call the enable endpoint"

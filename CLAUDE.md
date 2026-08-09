@@ -18,7 +18,25 @@ The ws7 collector no longer exists. It ran out of `/tmp2/b12902066/Gym_Fetch`, m
 
 The project is being moved to **GitHub Actions + Supabase**; the approved plan is [`docs/plan/2026-08-09-github-actions-supabase-migration.md`](docs/plan/2026-08-09-github-actions-supabase-migration.md).
 
-**Phase A is only partly done — do not cut over.** The parts that needed no cloud account are complete: A0 recovery, A1 sync refactor, A5 fetch hardening, A8 migrations. Three pre-cutover blockers are still open because they all require the Supabase project to exist first: **A4** (data-only backup plus a rehearsed restore), **A6** (measuring whether `COPY ... FROM STDIN` survives the transaction pooler on :6543), **A7** (repointing the local Grafana datasource at `gym_reader` over TLS). Phase B — Supabase project, secrets, workflows, GitHub Pages — has not started. There is no collector running anywhere right now.
+**Phase A is complete. Phase B has not started, so nothing is collecting yet.**
+
+State as of 2026-08-09:
+
+- **Supabase is live** (PostgreSQL 17.6) with all four migrations applied and **15,464 rows** loaded — 13,020 original plus 2,444 recovered. Table size 2.3 MB against the 500 MB Free plan ceiling.
+- **Roles behave as designed, verified against the real project**: `gym_writer` can insert current readings, is blocked by RLS from backdating, and is denied UPDATE and DELETE; `gym_reader` is read-only; `anon` and `authenticated` hold no privileges on any of the three exposed objects.
+- **A6 settled: use port 6543** (transaction pooler). Five consecutive syncs of fresh rows all succeeded — `COPY ... FROM STDIN` plus a TEMP staging table works there because the whole thing is one transaction. Recorded as the `PG_PORT` variable.
+- **A4 rehearsed**: a data-only dump restored into an empty database built only from `sql/migrations/`, matching by digest across all six columns.
+- **GitHub secrets and variables are set.** Secrets: `SUPABASE_{WRITER,READER}_{URL,PASSWORD}` — URLs carry no password, no port, no sslmode. Variables: `PG_PORT=6543`, `PG_SSLMODE=require`, `EXPECT_VENUES`, `PUBLISH_DAYS=7`.
+
+Local credentials live in `supabase.secrets` (gitignored, see `supabase.secrets.example`). It is meant to be **sourced, never read**:
+
+```bash
+bash -c 'set -a; . ./supabase.secrets; set +a; psql "$SUPABASE_OWNER_URL" -X -c "SELECT count(*) FROM occupancy;"'
+```
+
+The owner credential is deliberately absent from GitHub. Migrations, backfills and anything needing `ON CONFLICT DO UPDATE` run from the Mac.
+
+**Next: Phase B** — `.github/workflows/collect.yml`, then `publish.yml` for GitHub Pages, then `backup.yml`. Sections B3–B5 of the plan carry the YAML and the reasoning.
 
 `docs/recovery/` holds the archived page and the 2,444 rows rebuilt from it. Reconstructed rows are identifiable by `source_updated_at IS NULL` — every row written by the real collector has that column populated.
 

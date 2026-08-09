@@ -56,6 +56,12 @@ docker-data/
 grafana-data/
 postgres-data/
 
+# Playwright MCP scratch output: page snapshots, console logs and screenshots
+# written next to the repo whenever the page is verified in a real browser.
+# Ignored rather than trashed after the fact -- TRASH-FILES.md already records
+# three rounds of clearing these out by hand, which is two too many.
+.playwright-mcp/
+
 # Claude Code personal settings. settings.local.json is the documented place
 # for per-developer permission grants; keeping it out of git stops one
 # person's convenience allowlist -- e.g. auto-approving browser JS execution --

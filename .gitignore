@@ -18,7 +18,9 @@ env/
 *.db
 *.db-*
 *.csv
-!docs/**/*.csv
+# Narrow: only the recovery export is meant to be versioned. A blanket
+# !docs/**/*.csv would quietly admit any future data dump left under docs/.
+!docs/recovery/*.csv
 
 # Runtime logs
 logs/
@@ -31,6 +33,11 @@ logs/
 
 # Brainstorming scratch output
 .superpowers/brainstorm/
+
+# Local holding area for deleted files. Git already records the deletion, so
+# versioning a second copy here is redundant. TRASH-FILES.md (the log of what
+# went in and why) stays tracked.
+TRASH/
 
 # OS/editor noise
 .DS_Store

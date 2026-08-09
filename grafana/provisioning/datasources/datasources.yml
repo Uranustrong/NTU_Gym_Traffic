@@ -4,8 +4,22 @@ apiVersion: 1
 # compose network. The UID `gym-postgres` is referenced by every panel in
 # `grafana/weekly-dashboard.json`.
 #
-# Host/port/db/user/password are sourced from environment variables
-# defined by docker-compose.yml (which itself reads .env).
+# Every connection setting comes from environment variables defined by
+# docker-compose.yml (which itself reads the local env file), so the same
+# provisioning file serves both targets:
+#
+#   local container  DS_PG_HOST=postgres      DS_PG_SSLMODE=disable
+#                    DS_PG_PORT=5432          DS_PG_VERSION=1800
+#
+#   Supabase         DS_PG_HOST=aws-N-<region>.pooler.supabase.com
+#                    DS_PG_PORT=5432          (session pooler)
+#                    DS_PG_USER=gym_reader.<project-ref>
+#                    DS_PG_SSLMODE=require    DS_PG_VERSION=1700
+#
+# Two things bite when pointing at Supabase: sslmode must not stay `disable`
+# (libpq would silently fall back to plaintext over the public internet), and
+# the username needs the project-ref suffix that Supavisor requires - even for
+# custom roles. Use gym_reader, never the owner: the dashboard only reads.
 datasources:
   - name: gym-postgres
     uid: gym-postgres
@@ -17,8 +31,8 @@ datasources:
     editable: false
     jsonData:
       database: ${DS_PG_DB}
-      sslmode: disable
-      postgresVersion: 1800
+      sslmode: ${DS_PG_SSLMODE}
+      postgresVersion: ${DS_PG_VERSION}
       timescaledb: false
     secureJsonData:
       password: ${DS_PG_PASSWORD}

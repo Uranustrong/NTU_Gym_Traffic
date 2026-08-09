@@ -55,6 +55,14 @@ GRANT SELECT ON public.occupancy TO gym_reader;
 GRANT SELECT ON public.weekly_occupancy_slots TO gym_reader;
 GRANT SELECT ON public.current_vs_history TO gym_reader;
 
+-- Needed by the backup, not by any query: pg_dump --data-only reads
+-- occupancy_id_seq to record last_value, so a restore resumes the sequence
+-- instead of colliding with existing ids. Without this the backup fails with
+-- "permission denied for sequence occupancy_id_seq" -- and leaves a zero-byte
+-- file behind that looks like a backup. Reading a sequence grants nothing
+-- else; USAGE (which would allow consuming values) is deliberately withheld.
+GRANT SELECT ON SEQUENCE public.occupancy_id_seq TO gym_reader;
+
 -- Belt and braces: strip anything a previous, more permissive setup granted.
 REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER
     ON public.occupancy FROM gym_writer;

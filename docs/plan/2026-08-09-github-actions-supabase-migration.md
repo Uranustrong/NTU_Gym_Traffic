@@ -213,11 +213,17 @@ Supabase Free plan **沒有** daily backup / PITR。ws7 時代至少有 SQLite �
 
 ```bash
 pg_dump "$READER_URL" \
-  --format=custom --data-only \
+  --format=custom --data-only --enable-row-security \
   --table=public.occupancy \
   --no-owner --no-privileges \
   -f occupancy-$(date +%F).dump
 ```
+
+**`--enable-row-security` 不是選配。** 實測時少了它，pg_dump 直接拒絕：`query would be affected by row-level security policy for table "occupancy"`。這是它的保護機制——不願默默產出可能不完整的備份。加上之後，dump 的內容等於 `gym_reader` 的 policy 看得到的範圍；目前 policy 是 `USING (true)` 所以是全部，但**這代表備份完整性從此依賴 policy**，所以下面的列數比對是必要步驟而非額外檢查。
+
+**`gym_reader` 需要 sequence 的 SELECT。** `--data-only` 會讀 `occupancy_id_seq` 的 `last_value` 以便還原後接續編號，少了會失敗（已補進 `003_roles_grants.sql`；只給 SELECT 不給 USAGE）。
+
+**失敗的 dump 會留下檔案。** 上述兩個錯誤分別留下 0 byte 與 1.5K 的殘檔——後者更危險，看起來像有效備份。**backup workflow 必須檢查檔案大小與還原後列數，不能只看 exit code。**
 
 ⚠️ **公開 repo 的 Actions artifact 任何有 read access 的人都能下載**，等同公開。因此 artifact 裡只能放已確認可公開的內容 —— `public.occupancy` 的資料本來就會呈現在公開頁面上，所以這個範圍是安全的；但這正是「不要整庫 dump」的理由。若未來 dump 內容包含非公開資料，必須加密或改放私人儲存。
 
@@ -307,7 +313,7 @@ except (OSError, http.client.HTTPException) as error:
 ## A6. Pooler 選擇（依 A1 結果決定，B1 實測）
 
 - **Migration、`pg_dump`、本機 Grafana** → Session pooler **:5432**。
-- **collect / publish** → A1 完成後 sync 是單一 transaction，TEMP table 全程 pin 在同一 backend，此時 Transaction pooler **:6543** 是 Supabase 對短命 client 的建議。**但要在 B1 實測 `COPY ... FROM STDIN` 是否正常**；不通過就退回 :5432（併發數是 1，session mode 沒有 COPY 語意疑慮，退回無代價）。
+- **collect / publish** → **:6543（transaction pooler）— 已實測確定**。用真實的 Supabase 專案（PG 17.6）跑 `sync_to_postgres.py`，每次都用全新的兩列，連續 5 次全數成功；`COPY ... FROM STDIN` + `CREATE TEMP TABLE ... ON COMMIT DROP` + 交易內驗證在 transaction mode 下完全正常，因為整個操作在單一 transaction 內、backend 全程被 pin 住。5432 也可用（單次延遲 1.09s vs 1.40s，n=1 屬雜訊），但短命 client 用 transaction mode 是 Supabase 的建議做法。**`PG_PORT` 設 6543。**
 
 連線一律：`PGPASSWORD` 環境變數（**不進 argv**；`sync_to_postgres.py` 的 `subprocess.run()` 沒傳 `env=`，子行程直接繼承 `os.environ`，順帶繞開密碼含 `@ : / ? #` 的 percent-encoding 陷阱）、`PGSSLMODE=require`（libpq 預設 `prefer` 會在談不成 TLS 時**靜默降級成明文**）、`PGCONNECT_TIMEOUT=15`。
 

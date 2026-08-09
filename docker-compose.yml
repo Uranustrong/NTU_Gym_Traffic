@@ -48,11 +48,16 @@ services:
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_AUTH_ANONYMOUS_HIDE_VERSION: "true"
       # Substituted into datasources.yml at provisioning time.
-      DS_PG_HOST: postgres
-      DS_PG_PORT: "5432"
-      DS_PG_DB: ${POSTGRES_DB:-gym_fetch}
-      DS_PG_USER: ${POSTGRES_USER:-songhejun}
-      DS_PG_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing in .env}
+      # Defaults target the postgres service in this compose network. To point
+      # the dashboard at Supabase instead, override DS_PG_* in the local env
+      # file - see the header of grafana/provisioning/datasources/datasources.yml.
+      DS_PG_HOST: ${DS_PG_HOST:-postgres}
+      DS_PG_PORT: ${DS_PG_PORT:-5432}
+      DS_PG_DB: ${DS_PG_DB:-${POSTGRES_DB:-gym_fetch}}
+      DS_PG_USER: ${DS_PG_USER:-${POSTGRES_USER:-songhejun}}
+      DS_PG_PASSWORD: ${DS_PG_PASSWORD:-${POSTGRES_PASSWORD:?POSTGRES_PASSWORD missing in the local env file}}
+      DS_PG_SSLMODE: ${DS_PG_SSLMODE:-disable}
+      DS_PG_VERSION: ${DS_PG_VERSION:-1800}
     # Bind to loopback only by default (see PG_BIND_ADDR comment above).
     ports:
       - "${GRAFANA_BIND_ADDR:-127.0.0.1}:3000:3000"

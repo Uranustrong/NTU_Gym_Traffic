@@ -39,6 +39,9 @@ logs/
 # went in and why) stays tracked.
 TRASH/
 
+# Database dumps. Keep them off-machine, not in git history.
+backups/
+
 # Credentials handed to local tooling by sourcing, never by reading.
 # *.secrets.example templates stay tracked.
 *.secrets

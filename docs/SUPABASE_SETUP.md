@@ -44,15 +44,26 @@ Copy it. It appears in every connection string.
 
 ## 3. Get the Session pooler host
 
-Click **Connect** at the top of the dashboard. You will see several options:
+Click **Connect** at the top of the dashboard. The dialog opens on five tabs:
 
-| Option | Port | Use |
+```
+Framework | Server | Direct           | ORM       | MCP
+Use a      Build     Connection         Third-      Connect
+client     APIs      string             party lib   your agent
+library
+```
+
+It opens on **Framework**, which is for front-end client libraries and is not what we want. **Click the third tab, `Direct — Connection string`.** The label is misleading: that tab holds *all three* connection modes, not just the direct one.
+
+| Mode you will see there | Port | Use |
 |---|---|---|
 | Direct connection | 5432 | IPv6-only; skip it |
 | **Session pooler** | **5432** | **What we start with** |
-| Transaction pooler | 6543 | Tested later in A6; may become the choice for the workflows |
+| Transaction pooler | 6543 | Measured later in A6; may become the workflows' choice |
 
-Select **Session pooler** and copy just the hostname — it looks like `aws-1-ap-northeast-1.pooler.supabase.com`. Ignore the rest of the string; we assemble the URL ourselves for a reason explained below.
+Select **Session pooler** and copy **only the hostname** — it looks like `aws-1-ap-northeast-1.pooler.supabase.com`. Discard the rest of the string; we assemble the URL ourselves, for the reason in the note below.
+
+If the dialog looks different again, the same three options also live under **Project Settings → Database → Connection string**.
 
 ## 4. Fill in the local credentials file
 

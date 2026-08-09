@@ -1,0 +1,107 @@
+name: publish
+
+# Replaces the ws7 render cron and the ~/htdocs/gym page it wrote. Renders the
+# same self-contained HTML, reads through gym_reader, and deploys to Pages.
+
+on:
+  schedule:
+    # Every 15 minutes, not 5. Each deploy ships a 1 MB echarts.min.js plus the
+    # inlined data, and the readings are only worth that every so often.
+    #
+    # Minutes are 10,25,40,55 -- two minutes after collect fires at 08,23,38,53,
+    # so each publish picks up a reading that has just landed rather than racing
+    # the write it is meant to display.
+    #
+    # The trailing single entry each day is the one that matters most: the last
+    # collection of the day is at :58, after the last quarter-hour publish, and
+    # without it the page would sit all night showing the second-to-last
+    # reading.
+    - cron: "10-55/15 6-21 * * 1-5"
+      timezone: "Asia/Taipei"
+    - cron: "5 22 * * 1-5"           # after Mon-Fri close
+      timezone: "Asia/Taipei"
+    - cron: "10-55/15 9-21 * * 6"
+      timezone: "Asia/Taipei"
+    - cron: "5 22 * * 6"             # after Sat close
+      timezone: "Asia/Taipei"
+    - cron: "10-55/15 9-17 * * 0"
+      timezone: "Asia/Taipei"
+    - cron: "5 18 * * 0"             # after Sun close
+      timezone: "Asia/Taipei"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# cancel-in-progress is false on GitHub's own advice for Pages: a deployment
+# killed midway is worse than a deployment that finishes and is immediately
+# superseded. Only one run queues behind the active one either way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    env:
+      # render_public_html.py stamps the page with the Taipei wall clock and
+      # every panel query localizes fetched_at, so a UTC stamp would contradict
+      # the data underneath it.
+      TZ: Asia/Taipei
+      PG_URL: ${{ secrets.SUPABASE_READER_URL }}
+      PGPASSWORD: ${{ secrets.SUPABASE_READER_PASSWORD }}
+      PGPORT: ${{ vars.PG_PORT }}
+      PGSSLMODE: ${{ vars.PG_SSLMODE }}
+      PGCONNECT_TIMEOUT: "15"
+      PUBLISH_DAYS: ${{ vars.PUBLISH_DAYS }}
+    steps:
+      # Required, and easy to leave out: the script, the HTML template and the
+      # bundled echarts.min.js all live in the repo.
+      - uses: actions/checkout@v7
+
+      - name: Render
+        # --postgres-url is not optional here. load_env() falls back to a local
+        # .env, which is gitignored and therefore absent on a runner, and the
+        # fallback target is 127.0.0.1:5433.
+        run: |
+          set -euo pipefail
+          python3 tools/render_public_html.py \
+            --output-dir _site \
+            --postgres-url "$PG_URL" \
+            --days "$PUBLISH_DAYS"
+
+      - name: Sanity-check the page before it replaces a working one
+        # Deploying overwrites whatever is currently live, so a zero exit from
+        # the renderer is not enough on its own -- the same lesson the pg_dump
+        # drill taught, where a failed run still left a plausible-looking file.
+        run: |
+          set -euo pipefail
+          bytes=$(wc -c < _site/index.html)
+          if [ "$bytes" -lt 50000 ]; then
+            echo "::error::index.html is only $bytes bytes; refusing to deploy"
+            exit 1
+          fi
+          for venue in "Fitness Center" "Indoor Pool"; do
+            if ! grep -qF "$venue" _site/index.html; then
+              echo "::error::rendered page is missing $venue"
+              exit 1
+            fi
+          done
+          if [ ! -s _site/echarts.min.js ]; then
+            echo "::error::echarts.min.js missing or empty; charts would not render"
+            exit 1
+          fi
+          echo "index.html ${bytes} bytes, both venues present, echarts bundled"
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v5

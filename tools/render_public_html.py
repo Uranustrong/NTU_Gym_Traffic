@@ -34,6 +34,9 @@ import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+TAIPEI = ZoneInfo("Asia/Taipei")
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 DASHBOARD_JSON = REPO_DIR / "grafana" / "weekly-dashboard.json"
@@ -333,7 +336,11 @@ def main() -> int:
         print(f"panel query failed: {exc.stderr or exc}", file=sys.stderr)
         return 1
 
-    now = dt.datetime.now().astimezone()
+    # Pinned, not inherited. Every panel query already localizes fetched_at with
+    # AT TIME ZONE 'Asia/Taipei', so on a UTC runner astimezone() would stamp the
+    # page eight hours behind the data it is displaying. %Z still renders "CST",
+    # matching every page ws7 ever produced.
+    now = dt.datetime.now(TAIPEI)
     html = TEMPLATE_HTML.read_text()
     html = html.replace("{{DATA_JSON}}", json.dumps(data, ensure_ascii=False, separators=(",", ":")))
     html = html.replace("{{GENERATED_AT}}", now.strftime("%Y-%m-%d %H:%M %Z"))

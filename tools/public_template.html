@@ -3,6 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Deliberately shorter than the 15-minute publish cadence. The two are
+       unsynchronised, so a browser polling at exactly the publish period would
+       sit on average half a period behind the newest page on top of the data's
+       own age. Re-fetching index.html costs ~170 KB; echarts.min.js is a
+       separate, cached file. -->
   <meta http-equiv="refresh" content="300">
   <title>NTU Sports Center · Weekly Occupancy</title>
   <script src="echarts.min.js"></script>
@@ -66,7 +71,7 @@
         </select>
       </label>
     </div>
-    <div class="ts">Updated {{GENERATED_AT}} · auto-refreshes every 5 min</div>
+    <div class="ts">Updated {{GENERATED_AT}} · rebuilt every 15 min</div>
   </header>
   <main>
     <div id="panel1" class="panel"></div>
@@ -76,7 +81,8 @@
   </main>
   <footer>
     Data source <a href="https://rent.pe.ntu.edu.tw/">rent.pe.ntu.edu.tw</a>
-    · Public read-only view, refreshed every 5 minutes.
+    · Public read-only view. Readings are collected every 5 minutes; this page
+    is rebuilt every 15.
   </footer>
 
   <script>

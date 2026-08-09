@@ -2,6 +2,7 @@
 import argparse
 import csv
 import html as html_lib
+import http.client
 import re
 import ssl
 import sqlite3
@@ -9,8 +10,8 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.error import URLError
 from urllib.request import Request, urlopen
+from zoneinfo import ZoneInfo
 
 
 URL = "https://rent.pe.ntu.edu.tw/"
@@ -19,6 +20,25 @@ DEFAULT_INTERVAL_SECONDS = 300
 DEFAULT_RETRIES = 2
 DEFAULT_RETRY_DELAY_SECONDS = 10
 DEFAULT_LOG_DIR = "logs"
+DEFAULT_MAX_SOURCE_AGE_MINUTES = 15
+# Tolerance for the source page's clock running ahead of ours. Readings are
+# aligned to the minute at both ends, so a couple of minutes covers ordinary
+# skew; beyond that the timestamp is not trustworthy as a freshness signal.
+SOURCE_CLOCK_SKEW_MINUTES = 2
+
+# Pin the timezone instead of trusting the host's. The opening-hours logic
+# compares raw hour numbers, so on a UTC machine -- every GitHub Actions runner
+# -- `--open-hours-only` would silently skip nearly every scheduled run and
+# stamp rows with the wrong local day. Stored rows keep their explicit +08:00
+# offset either way, so this changes decisions, not history.
+TAIPEI = ZoneInfo("Asia/Taipei")
+
+# The source page reports its own timestamp as naive Taipei local time.
+SOURCE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M"
+
+
+def now_taipei():
+    return datetime.now(TAIPEI)
 
 
 class DailyLogStream:
@@ -34,7 +54,7 @@ class DailyLogStream:
             return
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = self.log_dir / f"{datetime.now().astimezone():%Y-%m-%d}.log"
+        log_path = self.log_dir / f"{now_taipei():%Y-%m-%d}.log"
         with open(log_path, "a", encoding="utf-8") as file:
             file.write(text)
 
@@ -181,7 +201,7 @@ def next_interval_time(value, interval_seconds):
 
 def save_rows(conn, rows, fetched_at=None):
     if fetched_at is None:
-        fetched_at = datetime.now().astimezone().replace(second=0, microsecond=0)
+        fetched_at = now_taipei().replace(second=0, microsecond=0)
     fetched_at_text = fetched_at.isoformat()
     conn.executemany(
         """
@@ -221,7 +241,82 @@ def export_csv(conn, output_path):
         writer.writerows(cursor)
 
 
-def fetch_and_save(conn, url, fetched_at=None, exit_on_error=True, retries=DEFAULT_RETRIES):
+def parse_source_timestamp(text):
+    """Read the page's own timestamp, which is naive Taipei local time."""
+    if not text:
+        return None
+    try:
+        return datetime.strptime(text, SOURCE_TIMESTAMP_FORMAT).replace(tzinfo=TAIPEI)
+    except ValueError:
+        return None
+
+
+def validate_rows(rows, fetched_at, expect_venues=None,
+                  max_source_age_minutes=DEFAULT_MAX_SOURCE_AGE_MINUTES):
+    """Return human-readable problems with a scraped batch; empty means good.
+
+    parse_counts() only guarantees "at least one row parsed". A page that
+    renders just one of the two venues, or one whose timestamp has frozen,
+    would otherwise produce a green run and a quietly incomplete table --
+    the kind of gap that is invisible until someone plots it months later.
+    """
+    problems = []
+
+    seen = set()
+    duplicates = {row["venue"] for row in rows
+                  if row["venue"] in seen or seen.add(row["venue"])}
+    if duplicates:
+        # One venue twice means the page markup changed shape; the unique index
+        # on (fetched_at, venue) would silently keep only one of them.
+        problems.append(f"duplicate venue(s): {', '.join(sorted(duplicates))}")
+
+    if expect_venues:
+        found = {row["venue"] for row in rows}
+        missing = expect_venues - found
+        unexpected = found - expect_venues
+        if missing:
+            problems.append(f"missing venue(s): {', '.join(sorted(missing))}")
+        if unexpected:
+            problems.append(f"unexpected venue(s): {', '.join(sorted(unexpected))}")
+
+    for row in rows:
+        current = row["current_count"]
+        capacity = row["capacity_count"]
+        if current < 0:
+            problems.append(f'{row["venue"]}: negative current_count {current}')
+        elif capacity and current > capacity * 2:
+            # Genuine crowding overshoots the comfortable figure and can nudge
+            # past capacity; double capacity is a parse error, not a crowd.
+            problems.append(
+                f'{row["venue"]}: current_count {current} far exceeds '
+                f'capacity {capacity}')
+
+    if max_source_age_minutes is not None:
+        # The timestamp is page-global, so check each distinct value once
+        # rather than emitting the same complaint per venue.
+        for stamp in {row["source_updated_at"] for row in rows}:
+            source_time = parse_source_timestamp(stamp)
+            if source_time is None:
+                problems.append(f"unparseable source timestamp {stamp!r}")
+                continue
+            age_minutes = (fetched_at - source_time).total_seconds() / 60
+            if age_minutes > max_source_age_minutes:
+                problems.append(
+                    f"source timestamp {stamp} is {age_minutes:.0f} min old "
+                    f"(limit {max_source_age_minutes})")
+            elif age_minutes < -SOURCE_CLOCK_SKEW_MINUTES:
+                # A timestamp from the future means the page's clock and ours
+                # disagree badly enough that "fresh" is not a claim we can make.
+                problems.append(
+                    f"source timestamp {stamp} is {-age_minutes:.0f} min in "
+                    f"the future")
+
+    return problems
+
+
+def fetch_and_save(conn, url, fetched_at=None, exit_on_error=True, retries=DEFAULT_RETRIES,
+                   expect_venues=None,
+                   max_source_age_minutes=DEFAULT_MAX_SOURCE_AGE_MINUTES):
     rows = []
 
     for attempt in range(retries + 1):
@@ -231,15 +326,28 @@ def fetch_and_save(conn, url, fetched_at=None, exit_on_error=True, retries=DEFAU
 
         try:
             html = fetch_html(url)
-        except URLError as error:
-            print(f"fetch failed: {error}", file=sys.stderr)
+        except (OSError, http.client.HTTPException) as error:
+            # URLError and TimeoutError are both OSError subclasses. Catching
+            # only URLError meant a read timeout or a dropped connection
+            # escaped as a traceback instead of being retried -- rare on the
+            # campus network, much less so over the public internet.
+            print(f"fetch failed: {error!r}", file=sys.stderr)
+            rows = []
             continue
 
         rows = parse_counts(html)
-        if rows:
+        if not rows:
+            print("no occupancy rows found", file=sys.stderr)
+            continue
+
+        problems = validate_rows(
+            rows, fetched_at or now_taipei(), expect_venues, max_source_age_minutes)
+        if not problems:
             break
 
-        print("no occupancy rows found", file=sys.stderr)
+        for problem in problems:
+            print(f"rejected batch: {problem}", file=sys.stderr)
+        rows = []
 
     if not rows:
         if exit_on_error:
@@ -256,9 +364,11 @@ def fetch_and_save(conn, url, fetched_at=None, exit_on_error=True, retries=DEFAU
     return True
 
 
-def run_loop(conn, url, interval_seconds, open_hours_only):
+def run_loop(conn, url, interval_seconds, open_hours_only,
+             expect_venues=None,
+             max_source_age_minutes=DEFAULT_MAX_SOURCE_AGE_MINUTES):
     while True:
-        now = datetime.now().astimezone()
+        now = now_taipei()
         target = next_interval_time(now, interval_seconds)
         if open_hours_only and not is_open_time(target):
             target = next_open_time(target)
@@ -268,7 +378,11 @@ def run_loop(conn, url, interval_seconds, open_hours_only):
             print(f"waiting until {target.isoformat()}", flush=True)
             time.sleep(wait_seconds)
 
-        fetch_and_save(conn, url, fetched_at=target, exit_on_error=False)
+        fetch_and_save(
+            conn, url, fetched_at=target, exit_on_error=False,
+            expect_venues=expect_venues,
+            max_source_age_minutes=max_source_age_minutes,
+        )
         time.sleep(1)
 
 
@@ -282,7 +396,15 @@ def main():
     parser.add_argument("--open-hours-only", action="store_true", help="Only fetch during sports center opening hours.")
     parser.add_argument("--log-dir", default=DEFAULT_LOG_DIR, help=f"Directory for daily log files. Default: {DEFAULT_LOG_DIR}.")
     parser.add_argument("--no-log-file", action="store_true", help="Print to the terminal only; do not write daily log files.")
+    parser.add_argument("--expect-venues", default=None, help="Comma-separated venue names that must all be present, with nothing else. Example: 健身中心,室內游泳池")
+    parser.add_argument("--max-source-age-minutes", type=int, default=DEFAULT_MAX_SOURCE_AGE_MINUTES, help=f"Reject a batch whose source timestamp is older than this. Default: {DEFAULT_MAX_SOURCE_AGE_MINUTES}.")
+    parser.add_argument("--allow-stale-source", action="store_true", help="Skip the source-timestamp freshness check. Needed for smoke tests outside opening hours, when the page legitimately stops updating.")
     args = parser.parse_args()
+
+    expect_venues = None
+    if args.expect_venues:
+        expect_venues = {name.strip() for name in args.expect_venues.split(",") if name.strip()}
+    max_source_age = None if args.allow_stale_source else args.max_source_age_minutes
 
     db_path = Path(args.db)
     conn = connect(db_path)
@@ -296,15 +418,23 @@ def main():
         enable_daily_logging(args.log_dir)
 
     if args.loop:
-        run_loop(conn, args.url, args.interval, args.open_hours_only)
+        run_loop(
+            conn, args.url, args.interval, args.open_hours_only,
+            expect_venues=expect_venues,
+            max_source_age_minutes=max_source_age,
+        )
         return
 
-    now = datetime.now().astimezone().replace(second=0, microsecond=0)
+    now = now_taipei().replace(second=0, microsecond=0)
     if args.open_hours_only and not is_open_time(now):
         print(f"{now.isoformat()} closed hours; skipped")
         return
 
-    fetch_and_save(conn, args.url, fetched_at=now)
+    fetch_and_save(
+        conn, args.url, fetched_at=now,
+        expect_venues=expect_venues,
+        max_source_age_minutes=max_source_age,
+    )
 
 
 if __name__ == "__main__":

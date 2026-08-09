@@ -55,3 +55,10 @@ backups/
 docker-data/
 grafana-data/
 postgres-data/
+
+# Claude Code personal settings. settings.local.json is the documented place
+# for per-developer permission grants; keeping it out of git stops one
+# person's convenience allowlist -- e.g. auto-approving browser JS execution --
+# from silently becoming everyone's project default. A deliberately shared
+# .claude/settings.json can still be committed.
+.claude/settings.local.json

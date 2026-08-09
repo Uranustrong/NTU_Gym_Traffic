@@ -3,13 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- Matches the publish cadence. The two are unsynchronised, so a viewer
-       still sits on average half a period behind the newest page -- about two
-       and a half minutes, which is not worth extra polling to shave.
-       Re-fetching index.html costs ~124 KB; echarts.min.js is a separate URL
-       whose bytes never change, so the browser cache serves it and a redeploy
-       costs a returning visitor nothing for it. -->
-  <meta http-equiv="refresh" content="300">
+  <!-- No meta refresh. The page fetches its own data now, so it updates in
+       place: the scroll position and the venue/palette/granularity selections
+       all survive, which a full reload every five minutes destroyed. -->
   <title>NTU Sports Center · Weekly Occupancy</title>
   <script src="echarts.min.js"></script>
   <style>
@@ -28,6 +24,10 @@
       border-radius: 4px; padding: 4px 8px; font-size: 12px;
     }
     .ts { color: #777; font-size: 11px; margin-top: 10px; }
+    /* Staleness has to look different from freshness, or the page can show old
+       numbers as confidently as new ones. */
+    .ts.warn { color: #d0a24c; }
+    .ts.err  { color: #c9736b; }
     main { padding: 4px 24px 24px; max-width: 1280px; margin: 0 auto; }
     .panel {
       background: #11151c; border: 1px solid #20242c; border-radius: 6px;
@@ -40,6 +40,11 @@
     footer { padding: 8px 24px 28px; color: #666; font-size: 11px; text-align: center; }
     footer a { color: #888; text-decoration: none; }
     .err { color: #c08; font-size: 12px; padding: 12px; }
+    #fatal {
+      display: none; margin: 24px; padding: 16px 18px;
+      border: 1px solid #43262a; border-radius: 6px; background: #1a1114;
+      color: #c9736b; font-size: 13px; line-height: 1.7;
+    }
   </style>
 </head>
 <body>
@@ -72,8 +77,9 @@
         </select>
       </label>
     </div>
-    <div class="ts">Updated {{GENERATED_AT}} · rebuilt every 5 min</div>
+    <div class="ts" id="status">Loading…</div>
   </header>
+  <div id="fatal"></div>
   <main>
     <div id="panel1" class="panel"></div>
     <div id="panel4" class="panel"></div>
@@ -82,31 +88,150 @@
   </main>
   <footer>
     Data source <a href="https://rent.pe.ntu.edu.tw/">rent.pe.ntu.edu.tw</a>
-    · Public read-only view, collected and rebuilt every 5 minutes.
+    · Public read-only view. Readings are collected every 5 minutes and this
+    page reads them live.
   </footer>
 
   <script>
     "use strict";
-    const DATA = {{DATA_JSON}};
 
-    const state = {
-      venue: DATA.venues[0],
-      palette: "slate",
-      granularity: "60min",
-      metric: "avg_count",
-    };
+    // Baked at build time by tools/render_public_html.py. Everything here is
+    // configuration, never data: supabaseUrl, supabaseKey, venueDisplay,
+    // panelJs, days, refreshSeconds. The runtime payload lives in DATA below
+    // and only ever comes from the two RPCs.
+    const CONFIG = {{CONFIG_JSON}};
 
-    // Re-create the volkovlabs-echarts-panel plugin's `context` object so the
-    // panel JS extracted verbatim from grafana/weekly-dashboard.json runs
-    // unmodified: it reads context.panel.data.series and
-    // context.grafana.replaceVariables('${var}').
+    const REST = CONFIG.supabaseUrl.replace(/\/+$/, "") + "/rest/v1/rpc/";
+    const PROJECT_REF = (() => {
+      try { return new URL(CONFIG.supabaseUrl).hostname.split(".")[0]; }
+      catch (e) { return "unknown"; }
+    })();
+
+    const CACHE_SCHEMA = 1;
+    const KEY_HEATMAP = `gymdash:v${CACHE_SCHEMA}:${PROJECT_REF}:heatmap`;
+    const KEY_LIVE    = `gymdash:v${CACHE_SCHEMA}:${PROJECT_REF}:live:${CONFIG.days}`;
+    const HEATMAP_TTL_MS = 6 * 60 * 60 * 1000;
+    // Above this, a reading is old enough to mean something is wrong rather
+    // than that we are simply between collections.
+    const STALE_AFTER_MS = 15 * 60 * 1000;
+
+    // ---- venue naming -----------------------------------------------------
+    // Chinese names are the stable keys everywhere: they are what the database
+    // stores and what every RPC returns. English is presentation only.
+    const display = (v) => (CONFIG.venueDisplay && CONFIG.venueDisplay[v]) || v;
+
+    function translateField(series, fieldName) {
+      if (!series || !series.fields) return series;
+      for (const f of series.fields) {
+        if (f.name === fieldName) f.values = f.values.map(display);
+      }
+      return series;
+    }
+
+    // ---- transport --------------------------------------------------------
+    // apikey only. A publishable key (sb_publishable_...) is not a JWT, so
+    // putting it in Authorization: Bearer gets it rejected as a malformed one;
+    // that header is for a signed-in user's token, and there is no sign-in here.
+    async function rpc(name, args) {
+      const res = await fetch(REST + name, {
+        method: "POST",
+        headers: { "apikey": CONFIG.supabaseKey, "Content-Type": "application/json" },
+        body: JSON.stringify(args || {}),
+      });
+      if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
+      return res.json();
+    }
+
+    // ---- cache ------------------------------------------------------------
+    function cacheRead(key, maxAgeMs) {
+      let raw;
+      try { raw = localStorage.getItem(key); } catch (e) { return null; }
+      if (!raw) return null;
+      let box;
+      try { box = JSON.parse(raw); } catch (e) { return null; }
+      // Shape check, not just a presence check: a half-written or
+      // older-schema entry must be discarded rather than rendered.
+      if (!box || box.schemaVersion !== CACHE_SCHEMA || !box.payload) return null;
+      if (maxAgeMs && (Date.now() - (box.savedAt || 0)) > maxAgeMs) return null;
+      return box;
+    }
+
+    function cacheWrite(key, payload) {
+      try {
+        localStorage.setItem(key, JSON.stringify({
+          schemaVersion: CACHE_SCHEMA,
+          dataAsOf: payload.dataAsOf,
+          savedAt: Date.now(),
+          payload,
+        }));
+      } catch (e) { /* private mode, quota: not worth failing the page over */ }
+    }
+
+    // ---- runtime data -----------------------------------------------------
+    const DATA = { venues: [], panel1History: {}, panel1Now: {}, panel2: {}, panel3: {}, panel4: null };
+    let lastGood = { dataAsOf: null, servedAt: null, freshnessExpected: null, fromCache: false };
+
+    const state = { venue: null, palette: "slate", granularity: "60min", metric: "avg_count" };
+
+    function applyHeatmap(p) {
+      DATA.venues = p.venues || [];
+      DATA.panel2 = p.panel2 || {};
+      DATA.panel1History = p.panel1History || {};
+    }
+
+    function applyLive(p) {
+      DATA.panel1Now = p.panel1Now || {};
+      DATA.panel3 = p.panel3 || {};
+      DATA.panel4 = p.panel4 ? translateField(p.panel4, "venue") : null;
+      for (const v of Object.keys(DATA.panel3)) translateField(DATA.panel3[v], "metric");
+    }
+
+    // Only gym_live decides freshness, and it is recomputed from scratch each
+    // cycle rather than accumulated. Both halves of that matter:
+    //
+    //   - gym_heatmap carries a dataAsOf too, but it is cached for six hours by
+    //     design, so folding it in would let a stamp from this morning present
+    //     itself as the newest reading;
+    //   - keeping the newest value ever seen would let a stamp cached while the
+    //     collector was healthy mask the older one a later call actually
+    //     returns, so the page would go on saying "Updated" long after
+    //     collection had stopped -- the exact failure this line exists to catch.
+    function noteFreshness(live, fromCache) {
+      lastGood.dataAsOf = (live && live.dataAsOf) || null;
+      lastGood.servedAt = (live && live.servedAt) || null;
+      lastGood.freshnessExpected =
+        live && typeof live.freshnessExpected === "boolean" ? live.freshnessExpected : null;
+      lastGood.fromCache = !!fromCache;
+    }
+
+    // panel 1 is assembled from both calls: the typical bars and day count ride
+    // with the heatmap because they are the same slow-moving historical
+    // rollup, and only the "now" marker comes from the five-minute path. The
+    // panel's own JS buckets rows by `kind` and sorts what it needs, so
+    // concatenation order does not matter.
+    function panel1For(venue) {
+      const a = DATA.panel1History[venue], b = DATA.panel1Now[venue];
+      if (!a) return b || null;
+      if (!b) return a;
+      return {
+        fields: a.fields.map((f, i) => ({
+          name: f.name,
+          type: f.type,
+          values: f.values.concat((b.fields[i] && b.fields[i].values) || []),
+        })),
+      };
+    }
+
+    // ---- rendering --------------------------------------------------------
     function makeContext(series) {
       return {
         panel: { data: { series: series ? [series] : [] } },
         grafana: {
           replaceVariables: (s) => String(s)
             .split("${palette}").join(state.palette)
-            .split("${venue}").join(state.venue)
+            // display name, so titles read "Fitness Center" while the key
+            // stays Chinese
+            .split("${venue}").join(display(state.venue))
             .split("${granularity}").join(state.granularity)
             .split("${metric}").join(state.metric),
         },
@@ -114,7 +239,7 @@
     }
 
     const panelFns = {};
-    for (const [id, body] of Object.entries(DATA.panelJs)) {
+    for (const [id, body] of Object.entries(CONFIG.panelJs)) {
       panelFns[id] = new Function("context", body);
     }
 
@@ -125,8 +250,9 @@
     }
 
     function seriesFor(panelKey) {
-      if (panelKey === "panel1") return DATA.panel1[state.venue];
-      if (panelKey === "panel2") return DATA.panel2[state.venue][state.granularity];
+      if (!state.venue) return null;
+      if (panelKey === "panel1") return panel1For(state.venue);
+      if (panelKey === "panel2") return (DATA.panel2[state.venue] || {})[state.granularity];
       if (panelKey === "panel3") return DATA.panel3[state.venue];
       if (panelKey === "panel4") return DATA.panel4;
       return null;
@@ -145,42 +271,168 @@
       chart.setOption(option || {}, true);
     }
 
-    function renderAll() {
-      Object.keys(PANEL_IDS).forEach(renderPanel);
+    function renderAll() { Object.keys(PANEL_IDS).forEach(renderPanel); }
+
+    // ---- selectors --------------------------------------------------------
+    const venueSel = document.getElementById("sel-venue");
+
+    // Rebuilt whenever the venue list arrives, and careful to keep whatever the
+    // viewer had chosen: the list is asynchronous now, not a build-time constant.
+    function syncVenueOptions() {
+      const previous = state.venue;
+      venueSel.textContent = "";
+      for (const v of DATA.venues) {
+        const opt = document.createElement("option");
+        opt.value = v;                 // Chinese: the stable key
+        opt.textContent = display(v);  // English: presentation
+        venueSel.appendChild(opt);
+      }
+      state.venue = DATA.venues.includes(previous) ? previous : DATA.venues[0] || null;
+      if (state.venue) venueSel.value = state.venue;
     }
 
-    // --- selectors ---
-    const venueSel = document.getElementById("sel-venue");
-    DATA.venues.forEach((v) => {
-      const opt = document.createElement("option");
-      opt.value = v; opt.textContent = v;
-      venueSel.appendChild(opt);
-    });
-    venueSel.value = state.venue;
     venueSel.addEventListener("change", () => {
       state.venue = venueSel.value;
       // panel4 shows both venues, so it does not depend on venue.
       renderPanel("panel1"); renderPanel("panel2"); renderPanel("panel3");
     });
-
     document.getElementById("sel-palette").addEventListener("change", (e) => {
-      state.palette = e.target.value;
-      renderAll();
+      state.palette = e.target.value; renderAll();
     });
     document.getElementById("sel-granularity").addEventListener("change", (e) => {
-      state.granularity = e.target.value;
-      renderPanel("panel2");
+      state.granularity = e.target.value; renderPanel("panel2");
     });
     document.getElementById("sel-metric").addEventListener("change", (e) => {
-      state.metric = e.target.value;
-      renderPanel("panel2");
+      state.metric = e.target.value; renderPanel("panel2");
     });
-
     window.addEventListener("resize", () => {
       Object.values(charts).forEach((c) => c.resize());
     });
 
-    renderAll();
+    // ---- status -----------------------------------------------------------
+    const statusEl = document.getElementById("status");
+    const fatalEl = document.getElementById("fatal");
+
+    const fmtClock = new Intl.DateTimeFormat("en-GB", {
+      hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Taipei",
+    });
+
+    function minutesSince(iso) {
+      if (!iso) return null;
+      return Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    }
+
+    function setStatus(reachable) {
+      const age = minutesSince(lastGood.dataAsOf);
+      if (age === null) {
+        statusEl.className = "ts err";
+        statusEl.textContent = "No data yet";
+        return;
+      }
+      const stamp = fmtClock.format(new Date(lastGood.dataAsOf)) + " CST";
+      if (!reachable) {
+        statusEl.className = "ts err";
+        statusEl.textContent = `Showing cached data from ${stamp} (${age} min ago) · data source unreachable`;
+        return;
+      }
+      // Judged from dataAsOf, never from "the request succeeded". A stopped
+      // collector still answers 200 -- viewers polling this API are themselves
+      // enough to keep the project awake -- so trusting the response would
+      // quietly re-cache old numbers as if they were new.
+      const overdue = lastGood.freshnessExpected && (age * 60000) > STALE_AFTER_MS;
+      statusEl.className = overdue ? "ts warn" : "ts";
+      statusEl.textContent = overdue
+        ? `Last reading ${stamp} (${age} min ago) · collection may have stopped`
+        : `Updated ${stamp}`;
+    }
+
+    function showFatal(err) {
+      // The status line would otherwise sit on "Loading…" for ever, which
+      // reads as "still working" rather than "gave up".
+      statusEl.className = "ts err";
+      statusEl.textContent = "Could not reach the data source";
+      fatalEl.style.display = "block";
+      fatalEl.textContent =
+        "Could not load occupancy data, and there is nothing cached in this browser to fall back on. " +
+        "The data source may be temporarily unavailable. (" + err.message + ")";
+    }
+
+    // ---- polling ----------------------------------------------------------
+    let inFlight = false;      // never let two refreshes overlap
+    let backoffMs = 0;
+    let timer = null;
+    let heatmapAt = 0;
+    let everRendered = false;
+
+    async function refresh({ force } = {}) {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const needHeatmap = force || !heatmapAt || (Date.now() - heatmapAt) > HEATMAP_TTL_MS;
+        const [live, heat] = await Promise.all([
+          rpc("gym_live", { p_days: CONFIG.days }),
+          needHeatmap ? rpc("gym_heatmap", {}) : Promise.resolve(null),
+        ]);
+
+        // Cache before applying: applyLive() rewrites venue names in place for
+        // display, and a cache holding translated names would no longer match
+        // the keys the RPC returns.
+        if (heat) {
+          cacheWrite(KEY_HEATMAP, heat);
+          applyHeatmap(heat);
+          heatmapAt = Date.now();
+          syncVenueOptions();
+        }
+        cacheWrite(KEY_LIVE, live);
+        applyLive(live);
+        noteFreshness(live, false);
+
+        fatalEl.style.display = "none";
+        renderAll();
+        everRendered = true;
+        setStatus(true);
+        backoffMs = 0;
+      } catch (err) {
+        console.error("refresh failed:", err);
+        if (everRendered) setStatus(false);
+        else showFatal(err);
+        backoffMs = backoffMs ? Math.min(backoffMs * 2, 300000) : 5000;
+      } finally {
+        inFlight = false;
+        schedule();
+      }
+    }
+
+    function schedule() {
+      if (timer) clearTimeout(timer);
+      // Nothing to refresh for a tab nobody is looking at; each open tab would
+      // otherwise poll 288 times a day whether or not it is on screen.
+      if (document.visibilityState === "hidden") { timer = null; return; }
+      timer = setTimeout(refresh, backoffMs || CONFIG.refreshSeconds * 1000);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refresh();
+      else if (timer) { clearTimeout(timer); timer = null; }
+    });
+
+    // ---- boot -------------------------------------------------------------
+    // Paint from cache first so a returning viewer sees the charts immediately,
+    // then go and get the real thing. The cached view is labelled as such until
+    // the network answers.
+    (function boot() {
+      const heatBox = cacheRead(KEY_HEATMAP, HEATMAP_TTL_MS);
+      const liveBox = cacheRead(KEY_LIVE, null);
+      if (heatBox) { applyHeatmap(heatBox.payload); heatmapAt = heatBox.savedAt; syncVenueOptions(); }
+      if (liveBox) applyLive(liveBox.payload);
+      if (heatBox || liveBox) {
+        noteFreshness(liveBox && liveBox.payload, true);
+        renderAll();
+        everRendered = true;
+        setStatus(false);
+      }
+      refresh({ force: !heatBox });
+    })();
   </script>
 </body>
 </html>

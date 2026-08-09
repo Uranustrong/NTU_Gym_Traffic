@@ -12,21 +12,26 @@ Scrapes NTU sports center occupancy from `rent.pe.ntu.edu.tw` every 5 minutes du
 
 Pure Python standard library — no third-party packages. `requirements.txt` is intentionally empty.
 
-## Deployment: mid-migration, ws7 is gone
+## Deployment: GitHub Actions + Supabase
 
 The ws7 collector no longer exists. It ran out of `/tmp2/b12902066/Gym_Fetch`, machine-local scratch space that was wiped around **2026-08-08 03:29**, taking the Postgres container and roughly 48% of the collected history with it. Verified afterwards: no crontab on ws3 or ws7, no `/var/spool/cron/crontabs/`, nothing left in `$HOME`. Only the static public page at `~/htdocs/gym/index.html` survived, because it lives in the NFS home rather than in scratch.
 
-The project is being moved to **GitHub Actions + Supabase**; the approved plan is [`docs/plan/2026-08-09-github-actions-supabase-migration.md`](docs/plan/2026-08-09-github-actions-supabase-migration.md).
+**Phases A and B are complete and running.** The plan is [`docs/plan/2026-08-09-github-actions-supabase-migration.md`](docs/plan/2026-08-09-github-actions-supabase-migration.md); Phase C (a week of delivery measurement) and Phase D (follow-ups) are still open.
 
-**Phase A is complete. Phase B has not started, so nothing is collecting yet.**
+Three workflows, all verified end to end on 2026-08-09:
 
-State as of 2026-08-09:
+| Workflow | Cadence (Taipei) | Role | Port |
+|---|---|---|---|
+| `collect.yml` | every 5 min at `:03…:58`, opening hours only | `gym_writer` | 6543 |
+| `publish.yml` | every 15 min at `:10,:25,:40,:55`, plus once after closing | `gym_reader` | 6543 |
+| `backup.yml` | Mondays 04:20 | `gym_reader` | **5432** |
 
-- **Supabase is live** (PostgreSQL 17.6) with all four migrations applied and **15,464 rows** loaded — 13,020 original plus 2,444 recovered. Table size 2.3 MB against the 500 MB Free plan ceiling.
+The public page is live at **https://uranustrong.github.io/NTU_Gym_Traffic/** (Pages source is *GitHub Actions*, not a branch).
+
+- **Supabase is live** (PostgreSQL 17.6) with all four migrations applied. 15,464 rows were backfilled — 13,020 original plus 2,444 recovered — and collection has been appending since. Table size ~2.3 MB against the 500 MB Free plan ceiling.
 - **Roles behave as designed, verified against the real project**: `gym_writer` can insert current readings, is blocked by RLS from backdating, and is denied UPDATE and DELETE; `gym_reader` is read-only; `anon` and `authenticated` hold no privileges on any of the three exposed objects.
-- **A6 settled: use port 6543** (transaction pooler). Five consecutive syncs of fresh rows all succeeded — `COPY ... FROM STDIN` plus a TEMP staging table works there because the whole thing is one transaction. Recorded as the `PG_PORT` variable.
-- **A4 rehearsed**: a data-only dump restored into an empty database built only from `sql/migrations/`, matching by digest across all six columns.
-- **GitHub secrets and variables are set.** Secrets: `SUPABASE_{WRITER,READER}_{URL,PASSWORD}` — URLs carry no password, no port, no sslmode. Variables: `PG_PORT=6543`, `PG_SSLMODE=require`, `EXPECT_VENUES`, `PUBLISH_DAYS=7`.
+- **Port 6543 (transaction pooler) for collect and publish**, settled by measurement: `COPY ... FROM STDIN` plus a TEMP staging table works there because the whole sync is one transaction. **`backup.yml` must use 5432** — `pg_dump` holds one snapshot across many statements, which transaction pooling does not preserve. That is why the port is hardcoded there instead of reading `PG_PORT`.
+- **GitHub secrets and variables are set.** Secrets: `SUPABASE_{WRITER,READER}_{URL,PASSWORD}` — URLs carry no password, no port, no sslmode, so `PGPORT`/`PGSSLMODE` from the environment are what actually apply. Variables: `PG_PORT=6543`, `PG_SSLMODE=require`, `EXPECT_VENUES`, `PUBLISH_DAYS=7`.
 
 Local credentials live in `supabase.secrets` (gitignored, see `supabase.secrets.example`). It is meant to be **sourced, never read**:
 
@@ -36,15 +41,24 @@ bash -c 'set -a; . ./supabase.secrets; set +a; psql "$SUPABASE_OWNER_URL" -X -c 
 
 The owner credential is deliberately absent from GitHub. Migrations, backfills and anything needing `ON CONFLICT DO UPDATE` run from the Mac.
 
-**Next: Phase B** — `.github/workflows/collect.yml`, then `publish.yml` for GitHub Pages, then `backup.yml`. Sections B3–B5 of the plan carry the YAML and the reasoning.
+**Next: Phase C** — after a week of collection, run the four measurement queries in section C2 of the plan and decide whether to stay at 5-minute cadence or drop to 10.
 
 `docs/recovery/` holds the archived page and the 2,444 rows rebuilt from it. Reconstructed rows are identifiable by `source_updated_at IS NULL` — every row written by the real collector has that column populated.
 
-**Stale docs, do not trust yet:** `README_Server.md` and `README_Local.md` still describe the ws7 + rsync setup and still claim weekday opening is 08:00. `rsync.sh`, `tools/sync_local.sh`, `tools/psql_gym_postgres.sh`, `tools/cronlog.sh` and `crontab.example` are all vestiges of that deployment. Rewriting them is follow-up item D3 in the plan. (`docs/SERVER_SETUP.md` is accurate about the UserDir — commit `3666b87` corrected it to `~/htdocs` — but it still documents a deployment that no longer exists.)
+**Still pointing at the old world:** ws7's `~/htdocs/gym/index.html` is still serving the frozen 2026-08-08 page and still claims to auto-refresh; it should become a redirect to the Pages URL (plan item B6). `README_Server.md` and `README_Local.md` still describe the ws7 + rsync setup and still claim weekday opening is 08:00. `rsync.sh`, `tools/sync_local.sh`, `tools/psql_gym_postgres.sh`, `tools/cronlog.sh` and `crontab.example` are all vestiges of that deployment. Rewriting them is follow-up item D3.
 
 ## Common commands
 
 ```bash
+# Workflows. `collect --force` fetches outside opening hours and skips the
+# source-freshness check, which is the only way to smoke-test after closing.
+gh workflow run collect.yml                 # a real collection, now
+gh workflow run collect.yml -f force=true   # smoke test outside opening hours
+gh workflow run publish.yml                 # rebuild and redeploy the page
+gh workflow run backup.yml                  # dump, restore-verify, release, keepalive
+gh run list --workflow=collect.yml --limit 10
+gh run view <run-id> --log
+
 # One-shot fetch into gym_counts.sqlite3 (no logging to file)
 python3 fetch_counts.py --no-log-file
 
@@ -101,6 +115,10 @@ Two of the five test files are **destructive integration tests**. `dbtest_suppor
 - `test_grafana_weekly_views.py` — builds a throwaway schema, applies `sql/grafana_weekly_views.sql`, asserts, drops it.
 
 ## Architecture notes that span multiple files
+
+**The weekly empty commit is load-bearing, not noise.** GitHub disables a public repo's scheduled workflows after 60 days with no *repository* activity, and workflow runs do not count — 192 collections a day would not have kept it alive. `backup.yml`'s last step pushes `chore: keepalive <timestamp>` as `github-actions[bot]` and then calls the `/enable` endpoint for `collect.yml` as a second line of defence. That push does not trigger workflows (GitHub suppresses recursion for `GITHUB_TOKEN`), but it does reset the clock. If branch protection is ever turned on for `main`, the push is rejected and the step fails loudly on purpose; silently letting it fail would kill collection 60 days later with no other warning.
+
+**The SQLite file on a runner is scratch, not storage.** Each `collect.yml` run starts with an empty database, writes two rows, syncs them, and is destroyed. That is why `read_sqlite_rows()` having no WHERE clause costs nothing there — but also why a failed sync loses the reading permanently, hence three retries and an `if: failure()` artifact. The row count, never the file's existence, decides whether there is anything to sync: `connect()` runs before the opening-hours check, so a closed-hours run still leaves a valid empty database behind.
 
 **The schema lives in two places and must stay in sync.** `fetch_counts.py:connect()` defines the SQLite `occupancy` table; `sql/migrations/001_occupancy.sql` defines the Postgres equivalent plus the `(fetched_at, venue)` unique index that drives `ON CONFLICT`. Adding a column means editing both, plus the `OCCUPANCY_COLUMNS` tuple in `sync_to_postgres.py` — that one tuple now generates the `COPY` list, the `INSERT` list and the `read_sqlite_rows` SELECT, so there is nothing else to update.
 

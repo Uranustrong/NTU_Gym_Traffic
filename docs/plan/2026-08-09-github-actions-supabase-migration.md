@@ -1,5 +1,16 @@
 # 把 NTU_Gym_Traffic 的收集層搬到 GitHub Actions + Supabase
 
+> **狀態（2026-08-09）：Phase A、B 全部完成並在跑。** 下面保留的是當初核准的設計與推導過程，不隨實作更新；實際部署狀態看 `CLAUDE.md`。
+>
+> 實作與計畫的差異，都是實測後才改的：
+> - `actions/checkout` 用 **v7**，不是 B3 寫的 v6 —— v7 確實存在（v7.0.1），當時的判斷是錯的。
+> - `publish.yml` 的 `concurrency` 是 **`cancel-in-progress: false`**，不是 B4 寫的 `true`。GitHub 對 Pages 部署的官方建議是不要中斷進行中的部署；被取代的排隊 run 本來就只留一個。
+> - `public_template.html` 的 `<meta refresh>` **維持 300 秒**，沒有照 B4 改成 900。瀏覽器輪詢週期若等於發佈週期，平均會落後半個週期，疊在資料本身的時間差上；改的是文案，讓它誠實描述「5 分鐘採集、15 分鐘重建」。
+> - `backup.yml` 多做了 B4 沒要求的事：每週真的把 dump **還原進一個從 `sql/migrations/` 建起來的空資料庫並比對列數**。A4 只要求 cutover 前演練一次，但那次演練正好證明了「exit code 不等於備份可用」。
+> - Release asset 用單一滾動 tag `data-latest`，不是每週一個帶日期的 release。資料是 append-only，最新一份就包含全部歷史。
+>
+> B1 煙霧測試（run `31297029524`）一次通過：runner 內建 Python 3.12.3 與 psql 16.14，NTU 對 Azure 出口 IP 沒有封鎖，`VERIFY_X509_STRICT` workaround 在 Ubuntu 24.04 的 OpenSSL 下仍然必要且有效。
+
 ## Context
 
 收集器原本跑在 `ws7.csie.ntu.edu.tw:/tmp2/b12902066/Gym_Fetch`，`/tmp2` 是機器本地的 scratch 空間，已於 **2026-08-08 前後被清空**（`crontab -l` 回 `no crontab`，`/var/spool/cron/crontabs/` 不存在，Gym_Fetch 目錄無殘留）。

@@ -94,7 +94,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "-- refresh on: ${palette}\nWITH today AS (\n  SELECT EXTRACT(ISODOW FROM now() AT TIME ZONE 'Asia/Taipei')::int AS wd\n),\nhourly_typical AS (\n  SELECT\n    EXTRACT(HOUR FROM slot_start_time)::int AS hour,\n    ROUND(AVG(avg_current_count))::int      AS typical_count,\n    SUM(sample_count)                       AS samples\n  FROM weekly_occupancy_slots, today\n  WHERE venue = ${venue:sqlstring}\n    AND weekday_number = today.wd\n  GROUP BY hour\n),\ncurrent_now AS (\n  SELECT DISTINCT ON (venue)\n    EXTRACT(HOUR FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS hour,\n    current_count\n  FROM occupancy\n  WHERE venue = ${venue:sqlstring}\n    AND fetched_at >= now() - interval '30 minutes'\n  ORDER BY venue, fetched_at DESC\n),\nday_count AS (\n  SELECT count(DISTINCT (fetched_at AT TIME ZONE 'Asia/Taipei')::date) AS n\n  FROM occupancy, today\n  WHERE venue = ${venue:sqlstring}\n    AND EXTRACT(ISODOW FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int = today.wd\n)\nSELECT 'typical'::text AS kind, hour, typical_count AS count, samples\nFROM hourly_typical\nUNION ALL\nSELECT 'now'::text, hour, current_count, 1\nFROM current_now\nUNION ALL\nSELECT 'meta'::text, NULL::int, n::int, NULL::int\nFROM day_count\nORDER BY kind DESC, hour;"
+          "rawSql": "-- refresh on: ${palette}\n-- Canonical definition lives in sql/migrations/005_public_api.sql; the public\n-- page reads the same functions through public.gym_heatmap()/gym_live().\nSELECT 'typical'::text AS kind, hour, typical_count AS count, samples\nFROM api_private.gym_panel1_typical_rows(${venue:sqlstring})\nUNION ALL\nSELECT 'now'::text, hour, current_count, 1::bigint\nFROM api_private.gym_panel1_now_rows(${venue:sqlstring})\nUNION ALL\nSELECT 'meta'::text, NULL::int, n, NULL::bigint\nFROM api_private.gym_panel1_meta_rows(${venue:sqlstring})\nORDER BY kind DESC, hour;"
         }
       ],
       "fieldConfig": {
@@ -139,7 +139,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "-- refresh on: ${palette} ${metric}\nWITH bucketed AS (\n  SELECT\n    weekday_number,\n    CASE WHEN '${granularity}' = '60min'\n      THEN to_char(date_trunc('hour', ('2000-01-01 '||slot_start_time)::timestamp), 'HH24:00')\n      ELSE slot_label\n    END AS slot_label,\n    CASE WHEN '${granularity}' = '60min'\n      THEN date_trunc('hour', ('2000-01-01 '||slot_start_time)::timestamp)::time\n      ELSE slot_start_time\n    END AS slot_start_time,\n    avg_current_count,\n    avg_crowding_ratio,\n    sample_count\n  FROM weekly_occupancy_slots\n  WHERE venue = ${venue:sqlstring}\n)\nSELECT\n  weekday_number,\n  slot_label,\n  slot_start_time,\n  AVG(avg_current_count)  AS avg_count,\n  AVG(avg_crowding_ratio) AS crowding_ratio,\n  SUM(sample_count)       AS sample_count\nFROM bucketed\nGROUP BY weekday_number, slot_label, slot_start_time\nORDER BY slot_start_time, weekday_number;"
+          "rawSql": "-- refresh on: ${palette} ${metric}\n-- ORDER BY restated here on purpose: an inlined SQL function carries no\n-- guarantee that its internal ordering survives into the outer query.\nSELECT *\nFROM api_private.gym_panel2_rows(${venue:sqlstring}, '${granularity}')\nORDER BY slot_start_time, weekday_number;"
         }
       ],
       "fieldConfig": {
@@ -184,7 +184,7 @@
           "format": "time_series",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "-- refresh on: ${palette}\nWITH params AS (\n  SELECT\n    EXTRACT(DOW  FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS dow,\n    EXTRACT(HOUR FROM fetched_at AT TIME ZONE 'Asia/Taipei')::int AS hr,\n    fetched_at,\n    venue,\n    current_count\n  FROM occupancy\n  WHERE $__timeFilter(fetched_at) AND venue = ${venue:sqlstring}\n)\nSELECT\n  fetched_at AS \"time\",\n  venue       AS metric,\n  current_count AS value\nFROM params\nWHERE (dow BETWEEN 1 AND 5 AND hr >= 6 AND hr < 22)\n   OR (dow = 6              AND hr >= 9 AND hr < 22)\n   OR (dow = 0              AND hr >= 9 AND hr < 18)\nORDER BY fetched_at;"
+          "rawSql": "-- refresh on: ${palette}\n-- Time range comes from the dashboard picker, which is why the canonical\n-- function takes timestamps rather than a day count.\nSELECT *\nFROM api_private.gym_panel3_rows(${venue:sqlstring}, $__timeFrom(), $__timeTo())\nORDER BY 1;"
         }
       ],
       "fieldConfig": {
@@ -229,7 +229,7 @@
           "format": "table",
           "rawQuery": true,
           "editorMode": "code",
-          "rawSql": "-- refresh on: ${palette}\nWITH last_day AS (\n  SELECT max((fetched_at AT TIME ZONE 'Asia/Taipei')::date) AS d FROM occupancy\n),\nlatest_meta AS (\n  SELECT DISTINCT ON (venue)\n    venue, comfortable_count, capacity_count\n  FROM occupancy\n  WHERE comfortable_count IS NOT NULL OR capacity_count IS NOT NULL\n  ORDER BY venue, fetched_at DESC\n),\nreadings_recent AS (\n  SELECT venue, fetched_at, current_count\n  FROM occupancy, last_day\n  WHERE (fetched_at AT TIME ZONE 'Asia/Taipei')::date = last_day.d\n)\nSELECT\n  'summary'::text AS kind,\n  cvh.venue,\n  EXTRACT(EPOCH FROM cvh.latest_fetched_at) * 1000 AS ts_ms,\n  cvh.current_count,\n  cvh.historical_median_current_count   AS hist_median,\n  cvh.difference_from_median            AS diff,\n  cvh.current_crowding_ratio            AS ratio,\n  meta.comfortable_count                AS comfortable,\n  meta.capacity_count                   AS capacity\nFROM current_vs_history cvh\nLEFT JOIN latest_meta meta ON meta.venue = cvh.venue\nUNION ALL\nSELECT\n  'reading'::text, venue,\n  EXTRACT(EPOCH FROM fetched_at) * 1000,\n  current_count,\n  NULL, NULL, NULL, NULL, NULL\nFROM readings_recent\nORDER BY kind DESC, venue, ts_ms;"
+          "rawSql": "-- refresh on: ${palette}\nSELECT *\nFROM api_private.gym_panel4_rows()\nORDER BY kind DESC, venue, ts_ms;"
         }
       ],
       "fieldConfig": {

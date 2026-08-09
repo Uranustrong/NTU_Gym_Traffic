@@ -17,13 +17,23 @@ services:
       # the image stores data in a version-numbered subdir (e.g. /var/lib/postgresql/18)
       # so pg_upgrade --link works cleanly across major-version bumps.
       - gym-postgres-data:/var/lib/postgresql
-      # Schema and views come straight from sql/migrations/ so there is only
-      # one definition to keep correct. Roles/RLS (003, 004) are deliberately
-      # not mounted: they need passwords passed as psql variables, which the
-      # initdb hook cannot supply, and local development does not need them.
-      # Run tools/apply_migrations.sh against the container if you do.
+      # Schema, views and the panel API come straight from sql/migrations/ so
+      # there is only one definition to keep correct. Roles/RLS (003, 004) are
+      # deliberately not mounted: they need passwords passed as psql variables,
+      # which the initdb hook cannot supply, and local development does not
+      # need them. Run tools/apply_migrations.sh against the container if you do.
+      #
+      # 005 is not optional for the dashboard: every panel's rawSql now selects
+      # from api_private.gym_panel*_rows(), so a stack without it renders four
+      # broken panels. Its GRANTs skip themselves here because anon and
+      # gym_reader do not exist locally.
+      #
+      # These run only when the data directory is empty. An existing volume
+      # will not pick 005 up -- run tools/apply_migrations.sh against the
+      # running container instead.
       - ./sql/migrations/001_occupancy.sql:/docker-entrypoint-initdb.d/001_occupancy.sql:ro
       - ./sql/grafana_weekly_views.sql:/docker-entrypoint-initdb.d/002_views.sql:ro
+      - ./sql/migrations/005_public_api.sql:/docker-entrypoint-initdb.d/005_public_api.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s

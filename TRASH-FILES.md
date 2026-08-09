@@ -7,3 +7,6 @@ gym_counts.sqlite3.bak-20260809113255 - moved to TRASH/ - redundant snapshot fro
 sql/init/01_schema.sql - moved to TRASH/sql/ - superseded by sql/migrations/001_occupancy.sql, which docker-compose.yml now mounts into docker-entrypoint-initdb.d directly. Keeping both meant two copies of the schema that had to be edited in lockstep, exactly the drift CLAUDE.md warns about.
 ```
 .github/workflows/schedule-probe.yml - moved to TRASH/ - temporary experiment to tell a lagging scheduler from an ignored timezone; answered by collect firing at Taipei 15:13, so the probe is redundant and would only add noise runs
+.playwright-mcp/ - moved to TRASH/playwright-mcp-d4-verification - browser snapshots and console logs from verifying the D4 page; not part of the project
+d4-normal.png - moved to TRASH/ - stray Playwright screenshot from verifying the D4 page
+.playwright-mcp/ - moved to TRASH/playwright-mcp-d4-live - browser artefacts from verifying the page against the real Supabase endpoint

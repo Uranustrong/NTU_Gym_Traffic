@@ -39,6 +39,10 @@ logs/
 # went in and why) stays tracked.
 TRASH/
 
+# Credentials handed to local tooling by sourcing, never by reading.
+# *.secrets.example templates stay tracked.
+*.secrets
+
 # OS/editor noise
 .DS_Store
 *.swp

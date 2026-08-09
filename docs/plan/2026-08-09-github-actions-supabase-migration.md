@@ -9,6 +9,8 @@
 > - `backup.yml` 多做了 B4 沒要求的事：每週真的把 dump **還原進一個從 `sql/migrations/` 建起來的空資料庫並比對列數**。A4 只要求 cutover 前演練一次，但那次演練正好證明了「exit code 不等於備份可用」。
 > - Release asset 用單一滾動 tag `data-latest`，不是每週一個帶日期的 release。資料是 append-only，最新一份就包含全部歷史。
 >
+> **最大的一項偏離：collect 的觸發源換掉了。** B3 假設 GitHub 的 `schedule` 就是排程器。實測不成立——名目 5 分鐘，實際約 22 分鐘一次，而且在 collect 和 publish 之間輪流，像是 repo 層級的配額而非個別 workflow 的問題；運作一小時後間隔沒有收斂。同一時間 `workflow_dispatch` 五次全部零延遲啟動。所以改由 Supabase 的 `pg_cron` + `pg_net` 打 `workflow_dispatch` API 叫醒 collect，見 `sql/supabase/001_dispatch_cron.sql`。採集本身一行沒改，只換了誰叫醒它。`collect.yml` 的 `schedule` 區塊刻意保留當備援：PAT 於 **2026-11-07** 到期，屆時退化成 GitHub 的兩成而不是歸零。這也提前用掉了 D5 的一部分動機，但沒有碰 D5 真正的未知數（NTU 憑證鏈在 rustls / libcurl 下能不能過）。
+>
 > B1 煙霧測試（run `31297029524`）一次通過：runner 內建 Python 3.12.3 與 psql 16.14，NTU 對 Azure 出口 IP 沒有封鎖，`VERIFY_X509_STRICT` workaround 在 Ubuntu 24.04 的 OpenSSL 下仍然必要且有效。
 
 ## Context

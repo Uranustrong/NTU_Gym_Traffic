@@ -20,11 +20,11 @@ The ws7 collector no longer exists. It ran out of `/tmp2/b12902066/Gym_Fetch`, m
 
 Three workflows, all verified end to end on 2026-08-09:
 
-| Workflow | Cadence (Taipei) | Role | Port |
-|---|---|---|---|
-| `collect.yml` | every 5 min at `:03…:58`, opening hours only | `gym_writer` | 6543 |
-| `publish.yml` | every 15 min at `:10,:25,:40,:55`, plus once after closing | `gym_reader` | 6543 |
-| `backup.yml` | Mondays 04:20 | `gym_reader` | **5432** |
+| Workflow | Cadence (Taipei) | Woken by | Role | Port |
+|---|---|---|---|---|
+| `collect.yml` | every 5 min at `:03…:58`, opening hours only | Supabase `pg_cron`, with GitHub's own schedule as fallback | `gym_writer` | 6543 |
+| `publish.yml` | every 15 min at `:10,:25,:40,:55`, plus once after closing | GitHub schedule | `gym_reader` | 6543 |
+| `backup.yml` | Mondays 04:20 | GitHub schedule | `gym_reader` | **5432** |
 
 The public page is live at **https://uranustrong.github.io/NTU_Gym_Traffic/** (Pages source is *GitHub Actions*, not a branch).
 
@@ -116,6 +116,14 @@ Two of the five test files are **destructive integration tests**. `dbtest_suppor
 
 ## Architecture notes that span multiple files
 
+**Supabase wakes the collector; GitHub's own schedule is only the fallback.** GitHub delivered roughly one scheduled run every 22 minutes against a nominal 5, alternating between `collect` and `publish` as though the cap were per repository, and the interval was not converging after an hour. Manual dispatches, by contrast, started instantly every time — five for five. So `sql/supabase/001_dispatch_cron.sql` puts four `pg_cron` jobs on Supabase that call `ops.dispatch_workflow('collect.yml')`, which `pg_net` turns into a `workflow_dispatch` POST. Nothing about the collector itself changed; only what wakes it.
+
+Three consequences to keep in mind:
+
+- **That file is not a migration.** `tools/apply_migrations.sh` globs `sql/migrations/*.sql`, and the weekly restore drill applies those to a bare `postgres:17` container that has neither `pg_cron` nor `pg_net`. Putting it there would break the backup verification. Apply it by hand; it is idempotent and re-running rotates the token.
+- **The PAT expires 2026-11-07.** When it does, `pg_net` gets a 401 and nothing happens — no error surfaces anywhere. `select * from ops.dispatch_log;` decodes the status code (204 ok, 401 expired, 403 permissions narrowed, 404 cannot see the repo). This is exactly why `collect.yml` keeps its `schedule` block: expiry degrades collection to GitHub's ~20%, not to zero.
+- **pg_cron schedules are UTC** and cannot be given a timezone, so `sql/supabase/001_dispatch_cron.sql` carries a hand-shifted copy of the opening-hours windows. Taipei has no DST so the −8 offset is fixed, but this is now a **fifth** place the opening hours are written down.
+
 **A newly added `schedule` takes about an hour before GitHub first honours it.** Measured, not guessed: `collect.yml`'s cron landed on `main` at 06:10 UTC on 2026-08-09 and first fired at 07:12:58 — 62 minutes and twelve missed slots later, with nothing wrong anywhere. There is no API that reports whether a schedule has been registered, and `workflow_dispatch` succeeding proves nothing about it because it takes a different path entirely. So do not diagnose a silent schedule for at least an hour, and do not rewrite crons in the meantime. The same run also settled that the `timezone:` key works: it fired at Taipei 15:13, matching `3-59/5 9-17 * * 0` only under the Taipei reading — 07:13 UTC matches none of the three windows.
 
 **The weekly empty commit is load-bearing, not noise.** GitHub disables a public repo's scheduled workflows after 60 days with no *repository* activity, and workflow runs do not count — 192 collections a day would not have kept it alive. `backup.yml`'s last step pushes `chore: keepalive <timestamp>` as `github-actions[bot]` and then calls the `/enable` endpoint for `collect.yml` as a second line of defence. That push does not trigger workflows (GitHub suppresses recursion for `GITHUB_TOKEN`), but it does reset the clock. If branch protection is ever turned on for `main`, the push is rejected and the step fails loudly on purpose; silently letting it fail would kill collection 60 days later with no other warning.
@@ -135,7 +143,7 @@ Two of the five test files are **destructive integration tests**. `dbtest_suppor
 
 Default conflict strategy is `DO NOTHING` (collection only appends). `--on-conflict update` switches to `DO UPDATE` for backfills and repairs, and needs an owner credential because `gym_writer` has no UPDATE privilege and RLS confines its inserts to roughly the last hour.
 
-**Opening-hours logic is duplicated in four places.** Python-side in `fetch_counts.py:is_open_time()` (Mon-Fri 06-22, Sat 09-22, Sun 09-18); SQL-side in `sql/grafana_weekly_views.sql` (the `open_slots` CTE, using ISODOW 1-7); JS-side in the heatmap panel of `grafana/weekly-dashboard.json` (panel id 2's `OPEN_HOURS_MIN` table, used to label cells outside hours as "closed"); and again in SQL in `tools/render_public_html.py:sql_panel3()`. All four must stay in sync. The SQL sides localize `fetched_at` via `AT TIME ZONE 'Asia/Taipei'` before bucketing.
+**Opening-hours logic is duplicated in five places.** Python-side in `fetch_counts.py:is_open_time()` (Mon-Fri 06-22, Sat 09-22, Sun 09-18); SQL-side in `sql/grafana_weekly_views.sql` (the `open_slots` CTE, using ISODOW 1-7); JS-side in the heatmap panel of `grafana/weekly-dashboard.json` (panel id 2's `OPEN_HOURS_MIN` table, used to label cells outside hours as "closed"); and again in SQL in `tools/render_public_html.py:sql_panel3()`. Fifth, in UTC rather than Taipei, in the `pg_cron` schedules of `sql/supabase/001_dispatch_cron.sql`. All five must stay in sync. The SQL sides localize `fetched_at` via `AT TIME ZONE 'Asia/Taipei'` before bucketing.
 
 **Weekday opening really is 06:00, not the 08:00 the website advertises.** `rent.pe.ntu.edu.tw` lists 08:00-22:00 for the 綜合體育館 *building*, but 健身中心 is populated from 06:00 on every weekday in the collected history (06:00 typically 6-17 people, 07:00 typically 19-34). Commit `28a4ae6` corrected this on purpose; "fixing" it back to 08:00 discards two hours of real data every weekday.
 

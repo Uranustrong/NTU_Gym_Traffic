@@ -161,25 +161,27 @@ select cron.schedule('collect-saturday',        '*/5 1-13 * * 6',
 select cron.schedule('collect-sunday',          '*/5 1-9 * * 0',
                      $job$select ops.dispatch_workflow('collect.yml')$job$);
 
--- publish rides the same windows two minutes behind, at 2,7,...,57.
+-- publish is deliberately NOT scheduled, and an earlier version of this file
+-- that did schedule it is undone here.
 --
--- The offset is the whole point. A render fired on the same tick as a
--- collection races it: the run takes about fifteen seconds to fetch, validate
--- and commit, so a publish starting at the same instant would read the table
--- just before the new row lands and ship a page that is a full cycle stale --
--- consistently, not occasionally. Two minutes is far more than the gap needs
--- to be and costs nothing.
---
--- Nothing extra is needed after closing time. The last collection of the day
--- is at :55 and this renders it at :57, so the page settles on the final
--- reading instead of the second-to-last one.
-select cron.schedule('publish-weekday-early',   '2-57/5 22-23 * * 0-4',
-                     $job$select ops.dispatch_workflow('publish.yml')$job$);
-select cron.schedule('publish-weekday-main',    '2-57/5 0-13 * * 1-5',
-                     $job$select ops.dispatch_workflow('publish.yml')$job$);
-select cron.schedule('publish-saturday',        '2-57/5 1-13 * * 6',
-                     $job$select ops.dispatch_workflow('publish.yml')$job$);
-select cron.schedule('publish-sunday',          '2-57/5 1-9 * * 0',
-                     $job$select ops.dispatch_workflow('publish.yml')$job$);
+-- Those four jobs existed to keep the public page fresh, back when the
+-- readings were baked into index.html at build time. The page now calls
+-- public.gym_heatmap() and public.gym_live() from the browser -- see
+-- sql/migrations/005_public_api.sql -- so redeploying it does nothing at all
+-- for freshness. publish.yml runs on pushes to main that touch the page's
+-- code, and on nothing else.
+do $$
+declare
+    -- not `job`: that collides with the cron.job table inside the EXISTS below
+    -- and PL/pgSQL rejects the reference as ambiguous.
+    stale_job text;
+begin
+    FOREACH stale_job IN ARRAY ARRAY['publish-weekday-early', 'publish-weekday-main',
+                                     'publish-saturday', 'publish-sunday'] LOOP
+        IF EXISTS (SELECT 1 FROM cron.job j WHERE j.jobname = stale_job) THEN
+            PERFORM cron.unschedule(stale_job);
+        END IF;
+    END LOOP;
+end $$;
 
 select jobid, jobname, schedule, active from cron.job order by jobname;

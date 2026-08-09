@@ -1,33 +1,27 @@
 name: publish
 
-# Replaces the ws7 render cron and the ~/htdocs/gym page it wrote. Renders the
-# same self-contained HTML, reads through gym_reader, and deploys to Pages.
+# Deploys the public page. It is no longer a data pipeline.
+#
+# This used to run every five minutes because the page had the readings baked
+# into it, so freshness was capped by deploy frequency. The page now calls
+# public.gym_heatmap() and public.gym_live() on Supabase from the browser, so
+# it is deployed once and stays live by itself -- which means this only needs
+# to run when the code that builds the page changes.
+#
+# Consequences worth knowing: it holds no database credentials at all any more,
+# and the pg_cron jobs that used to dispatch it have been unscheduled.
 
 on:
-  schedule:
-    # Every 15 minutes, not 5. Each deploy ships a 1 MB echarts.min.js plus the
-    # inlined data, and the readings are only worth that every so often.
-    #
-    # Minutes are 10,25,40,55 -- two minutes after collect fires at 08,23,38,53,
-    # so each publish picks up a reading that has just landed rather than racing
-    # the write it is meant to display.
-    #
-    # The trailing single entry each day is the one that matters most: the last
-    # collection of the day is at :58, after the last quarter-hour publish, and
-    # without it the page would sit all night showing the second-to-last
-    # reading.
-    - cron: "10-55/15 6-21 * * 1-5"
-      timezone: "Asia/Taipei"
-    - cron: "5 22 * * 1-5"           # after Mon-Fri close
-      timezone: "Asia/Taipei"
-    - cron: "10-55/15 9-21 * * 6"
-      timezone: "Asia/Taipei"
-    - cron: "5 22 * * 6"             # after Sat close
-      timezone: "Asia/Taipei"
-    - cron: "10-55/15 9-17 * * 0"
-      timezone: "Asia/Taipei"
-    - cron: "5 18 * * 0"             # after Sun close
-      timezone: "Asia/Taipei"
+  push:
+    # branches AND paths. With paths alone, a push to any feature branch that
+    # happened to touch tools/ would deploy itself to the production Pages site.
+    branches: [main]
+    paths:
+      - "tools/render_public_html.py"
+      - "tools/public_template.html"
+      - "tools/echarts.min.js"
+      - "grafana/weekly-dashboard.json"
+      - ".github/workflows/publish.yml"
   workflow_dispatch:
 
 permissions:
@@ -36,8 +30,7 @@ permissions:
   id-token: write
 
 # cancel-in-progress is false on GitHub's own advice for Pages: a deployment
-# killed midway is worse than a deployment that finishes and is immediately
-# superseded. Only one run queues behind the active one either way.
+# killed midway is worse than one that finishes and is immediately superseded.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -50,15 +43,11 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     env:
-      # render_public_html.py stamps the page with the Taipei wall clock and
-      # every panel query localizes fetched_at, so a UTC stamp would contradict
-      # the data underneath it.
-      TZ: Asia/Taipei
-      PG_URL: ${{ secrets.SUPABASE_READER_URL }}
-      PGPASSWORD: ${{ secrets.SUPABASE_READER_PASSWORD }}
-      PGPORT: ${{ vars.PG_PORT }}
-      PGSSLMODE: ${{ vars.PG_SSLMODE }}
-      PGCONNECT_TIMEOUT: "15"
+      # Variables, not secrets. The publishable key ends up in the page source
+      # by design -- it is the credential every Supabase browser client ships --
+      # and masking it in logs would only make failures harder to read.
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
       PUBLISH_DAYS: ${{ vars.PUBLISH_DAYS }}
     steps:
       # Required, and easy to leave out: the script, the HTML template and the
@@ -66,38 +55,60 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Render
-        # --postgres-url is not optional here. load_env() falls back to a local
-        # .env, which is gitignored and therefore absent on a runner, and the
-        # fallback target is 127.0.0.1:5433.
+        # No --supabase-url/--supabase-key here: the script defaults them from
+        # the environment, which is what lets a local build work off
+        # `set -a; . ./supabase.secrets; set +a`.
         run: |
           set -euo pipefail
           python3 tools/render_public_html.py \
             --output-dir _site \
-            --postgres-url "$PG_URL" \
-            --days "$PUBLISH_DAYS"
+            --days "${PUBLISH_DAYS:-7}"
 
       - name: Sanity-check the page before it replaces a working one
-        # Deploying overwrites whatever is currently live, so a zero exit from
-        # the renderer is not enough on its own -- the same lesson the pg_dump
-        # drill taught, where a failed run still left a plausible-looking file.
+        # A deploy overwrites whatever is live, and the page no longer contains
+        # any data to check -- so check the wiring instead. An empty key or an
+        # unsubstituted placeholder still produces perfectly valid-looking HTML
+        # that 401s in every visitor's browser.
+        #
+        # The key's *shape* is validated in render_public_html.py, which
+        # refuses to write anything for a secret or service_role key. What
+        # happens here is the belt to that braces: an assertion about the file
+        # actually being deployed, so a future change to the renderer cannot
+        # quietly reopen the hole. A published secret key cannot be un-published;
+        # it can only be rotated.
         run: |
           set -euo pipefail
-          bytes=$(wc -c < _site/index.html)
-          if [ "$bytes" -lt 50000 ]; then
-            echo "::error::index.html is only $bytes bytes; refusing to deploy"
+          if grep -qF '{{' _site/index.html; then
+            echo "::error::unsubstituted placeholder left in index.html"
             exit 1
           fi
-          for venue in "Fitness Center" "Indoor Pool"; do
-            if ! grep -qF "$venue" _site/index.html; then
-              echo "::error::rendered page is missing $venue"
+          if ! grep -qF "$SUPABASE_URL" _site/index.html; then
+            echo "::error::index.html does not point at the expected project host"
+            exit 1
+          fi
+          for forbidden in 'sb_secret_' 'service_role'; do
+            if grep -qF "$forbidden" _site/index.html; then
+              echo "::error::index.html contains '$forbidden' -- refusing to publish a privileged credential"
               exit 1
             fi
           done
-          if [ ! -s _site/echarts.min.js ]; then
-            echo "::error::echarts.min.js missing or empty; charts would not render"
+          # Guard the emptiness case first: grep -F "" matches every line, so
+          # an unset variable would sail through the check below.
+          if [ "${#SUPABASE_PUBLISHABLE_KEY}" -lt 20 ]; then
+            echo "::error::SUPABASE_PUBLISHABLE_KEY is empty or truncated (${#SUPABASE_PUBLISHABLE_KEY} chars)"
             exit 1
           fi
-          echo "index.html ${bytes} bytes, both venues present, echarts bundled"
+          # Asserted rather than pattern-matched, so this holds for a legacy
+          # anon JWT as well as an sb_publishable_ key.
+          if ! grep -qF "$SUPABASE_PUBLISHABLE_KEY" _site/index.html; then
+            echo "::error::the configured key is not present in index.html; the page would 401 for every visitor"
+            exit 1
+          fi
+          if [ ! -s _site/echarts.min.js ]; then
+            echo "::error::echarts.min.js missing or empty; no chart would render"
+            exit 1
+          fi
+          echo "index.html $(wc -c < _site/index.html) bytes, wiring looks right"
 
       - uses: actions/upload-pages-artifact@v5
         with:

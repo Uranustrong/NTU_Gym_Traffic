@@ -11,12 +11,14 @@ ships.
 **Idea:** ◀ / ▶ arrows beside a panel to step through one week at a time,
 instead of a single fixed window.
 
-**Status:** deferred — collection started 2026-05-14, so there is only ~1 week
-of data and nothing to navigate yet. Revisit once several weeks accumulate.
+**Status:** deferred. Collection started 2026-05-14, so the span is now wide
+enough to navigate — but it is not contiguous: 2026-06-22 → 08-07 is gone with
+ws7, and the recovered week is only partially detailed. Arrows that step into
+an empty week need to say "no data", not render blank axes.
 
 **Constraints / notes:**
-- The public page (`tools/render_public_html.py` → `~/htdocs/gym/index.html`)
-  is **static**. Existing interactivity (palette / venue / granularity) works
+- The public page (`tools/render_public_html.py`, deployed to GitHub Pages by
+  `.github/workflows/publish.yml`) is **static**. Existing interactivity (palette / venue / granularity) works
   only because every option's data is baked into the HTML and JS switches
   between baked sets. Week navigation needs the same: bake every week's data,
   plus hand-written arrow controls.
@@ -52,12 +54,21 @@ to Postgres, surface it through the panel SQL and tooltips. Update
 real collection gap is silently bridged by a straight diagonal line that looks
 like continuous data.
 
-**Status:** undecided. Options discussed:
+**Status:** undecided, but **no longer hypothetical — this is visible on the
+live page right now.** The ws7 loss left a six-week hole (2026-06-22 →
+2026-08-07) and a two-day one (2026-08-07 21:55 → 2026-08-09 13:35, between the
+last ws7 reading and the first GitHub Actions one). The second is inside the
+`--days 7` window and is currently drawn as a straight diagonal across two days
+of nothing.
+
+Options discussed:
 - (A) break the line at same-day gaps > 30 min by inserting a `null` point —
   same idea as panel 4's `padReadings` helper;
 - (B) leave it as-is;
-- (C) fill the gap with a historical estimate — weak: too little history, and
-  no prior same-weekday data exists yet.
+- (C) fill the gap with a historical estimate — weak, and now actively wrong:
+  inventing readings across a known outage is the opposite of honest.
 
-**Notes:** the only real gap so far (2026-05-20 14:30–16:50, a server-migration
-artifact) leaves the `--days 7` window on its own after a week.
+**Notes:** the six-week hole will never leave the heatmap or Popular Times,
+because those aggregate all history rather than a trailing window. The
+`--days 7` line chart clears the two-day gap on 2026-08-16. Recovered rows
+carry `source_updated_at IS NULL` if the fix wants to mark them.

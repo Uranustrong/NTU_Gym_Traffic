@@ -1,0 +1,125 @@
+name: collect
+
+# Smoke-test stage (plan section B1): manual dispatch only, no schedule yet.
+#
+# Everything else in this migration was verifiable from a laptop. One thing is
+# not: whether GitHub's Azure egress can reach rent.pe.ntu.edu.tw at all. If
+# NTU blocks off-campus or overseas traffic, no amount of YAML fixes it, so the
+# schedule block goes in only after a manual run has proved the whole path --
+# fetch, parse, TLS workaround, writer credential, RLS window, transaction
+# pooler -- end to end.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Fetch even outside opening hours (smoke test)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Only one pending run is kept per group: a new run replaces the queued one
+# rather than stacking behind it. So "no overlap" holds, but "every scheduled
+# tick survives" does not -- which is why timeout-minutes below is short.
+concurrency:
+  group: collect
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      # is_open_time() compares bare hour numbers against Taipei opening hours.
+      # fetch_counts.py pins the zone itself via now_taipei(), so this is the
+      # second line of defence, not the first.
+      TZ: Asia/Taipei
+      SQLITE_DB: ${{ github.workspace }}/gym_counts.sqlite3
+      # Secret because it carries the project ref and the role name. It
+      # deliberately omits both port and sslmode: libpq resolves an explicit
+      # URL value ahead of the environment, so a port baked into the URL would
+      # make PGPORT below silently dead configuration.
+      PG_URL: ${{ secrets.SUPABASE_WRITER_URL }}
+      PGPASSWORD: ${{ secrets.SUPABASE_WRITER_PASSWORD }}
+      # 6543 is the transaction pooler, chosen by measurement rather than by
+      # documentation: sync is a single transaction, so the TEMP staging table
+      # stays pinned to one backend and COPY ... FROM STDIN works there.
+      PGPORT: ${{ vars.PG_PORT }}
+      # libpq defaults to `prefer`, which silently falls back to plaintext over
+      # the public internet when TLS cannot be negotiated.
+      PGSSLMODE: ${{ vars.PG_SSLMODE }}
+      PGCONNECT_TIMEOUT: "15"
+      EXPECT_VENUES: ${{ vars.EXPECT_VENUES }}
+      # Read through the environment rather than interpolated into the shell,
+      # so workflow inputs can never become shell syntax.
+      FORCE: ${{ inputs.force }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Runner toolchain
+        # The ubuntu-24.04 image ships Python 3 and a PostgreSQL client, so
+        # neither setup-python nor apt-get is needed. Assert it rather than
+        # assume it: if a future image drops psql, the failure should say so
+        # here instead of surfacing as "sync failed 3 times".
+        run: |
+          set -euo pipefail
+          python3 --version
+          psql --version
+
+      - name: Fetch
+        run: |
+          set -euo pipefail
+          args=(--db "$SQLITE_DB" --no-log-file --expect-venues "$EXPECT_VENUES")
+          if [ "${FORCE:-false}" = "true" ]; then
+            # Outside opening hours the source page legitimately stops
+            # refreshing, so its timestamp is stale by design. Enforcing
+            # freshness would make the smoke test unrunnable at a sane hour.
+            args+=(--allow-stale-source)
+          else
+            args+=(--open-hours-only)
+          fi
+          python3 fetch_counts.py "${args[@]}"
+
+      - name: Sync to Supabase
+        run: |
+          set -euo pipefail
+          # connect() runs before the opening-hours check, so the SQLite file
+          # exists either way and its presence proves nothing. Count rows.
+          rows=$(python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT count(*) FROM occupancy").fetchone()[0])' "$SQLITE_DB" 2>/dev/null || echo 0)
+          if [ "$rows" -eq 0 ]; then
+            echo "closed hours - nothing to sync"
+            exit 0
+          fi
+          if [ "$rows" -ne 2 ]; then
+            echo "::error::expected 2 rows, got $rows"
+            exit 1
+          fi
+          # Retrying is safe: sync runs as one transaction and verifies itself
+          # by joining the staged rows against occupancy, so a re-run after a
+          # lost commit response hits ON CONFLICT DO NOTHING, writes zero rows,
+          # and still passes verification.
+          for attempt in 1 2 3; do
+            if python3 sync_to_postgres.py --sqlite-db "$SQLITE_DB" --postgres-url "$PG_URL"; then
+              exit 0
+            fi
+            echo "sync attempt $attempt/3 failed" >&2
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          echo "::error::sync failed 3 times - this reading is lost"
+          exit 1
+
+      - name: Preserve the unsent reading
+        # The runner is ephemeral and this reading has no second source: the
+        # moment it measured is gone. Keep the SQLite file so it can be
+        # replayed by hand.
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsent-${{ github.run_id }}
+          path: ${{ github.workspace }}/gym_counts.sqlite3
+          retention-days: 7
+          if-no-files-found: ignore

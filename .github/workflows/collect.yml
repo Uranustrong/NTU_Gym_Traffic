@@ -9,10 +9,18 @@ on:
     # Taipei local time, not UTC -- the `timezone` key means the hour fields
     # below can be read against the posted opening hours directly.
     #
-    # Minutes are 3,8,...,58 rather than 0,5,...,55: GitHub names every whole
-    # hour as a high-load window where queued jobs are delayed or dropped, and
-    # :00 is the worst offender. The cost is the 06:00-06:02 reading on
-    # weekdays, which the old */5 crontab did collect.
+    # This is now the FALLBACK trigger. Supabase pg_cron dispatches this
+    # workflow on the same windows at 0,5,...,55 -- see
+    # sql/supabase/001_dispatch_cron.sql for why. What is left here is what
+    # keeps collection alive at GitHub's own rate on the day that PAT expires.
+    #
+    # Minutes stay at 3,8,...,58 rather than moving to 0,5,...,55 with it.
+    # GitHub names every whole hour as a high-load window where queued jobs are
+    # delayed or dropped, and :00 is the worst offender -- a constraint that
+    # applies to this trigger and not to pg_cron, which fires within
+    # milliseconds and is never throttled. Keeping the offset also staggers the
+    # two, so a fallback run that does get through lands between pg_cron ticks
+    # rather than on top of one.
     #
     # These windows are the outer bound. is_open_time() in fetch_counts.py is
     # what actually decides, so an over-firing cron costs a no-op run, never a

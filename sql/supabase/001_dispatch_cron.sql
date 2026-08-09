@@ -135,20 +135,30 @@ revoke all on table ops.dispatch_log from public;
 -- collect.yml's Taipei crons, shifted by -8 hours -- Taipei has no DST, so the
 -- offset is fixed and the two definitions cannot drift apart seasonally.
 --
---   Taipei Mon-Fri 06:03-07:58  ->  UTC Sun-Thu 22:03-23:58
---   Taipei Mon-Fri 08:03-21:58  ->  UTC Mon-Fri 00:03-13:58
---   Taipei Sat     09:03-21:58  ->  UTC Sat     01:03-13:58
---   Taipei Sun     09:03-17:58  ->  UTC Sun     01:03-09:58
+--   Taipei Mon-Fri 06:00-07:55  ->  UTC Sun-Thu 22:00-23:55
+--   Taipei Mon-Fri 08:00-21:55  ->  UTC Mon-Fri 00:00-13:55
+--   Taipei Sat     09:00-21:55  ->  UTC Sat     01:00-13:55
+--   Taipei Sun     09:00-17:55  ->  UTC Sun     01:00-09:55
+--
+-- Minutes are 0,5,...,55 here but 3,8,...,58 in collect.yml, and the asymmetry
+-- is deliberate. The :03 offset exists to dodge GitHub's own scheduler, which
+-- is documented to shed load at the top of every hour -- a constraint that
+-- applies to the fallback trigger and not to this one, since pg_cron fires
+-- within milliseconds of the tick and workflow_dispatch is never throttled.
+-- Landing on multiples of five puts new readings back on the same grid as the
+-- 13,014 of 13,020 pre-migration rows that sit at minute % 5 = 0. It also
+-- staggers the two triggers, so a fallback run that does get through fills a
+-- gap between ticks instead of duplicating one.
 --
 -- Over-firing is harmless: fetch_counts.py --open-hours-only is what actually
 -- decides, and a closed-hours run exits 0 having written nothing.
-select cron.schedule('collect-weekday-early',   '3-59/5 22-23 * * 0-4',
+select cron.schedule('collect-weekday-early',   '*/5 22-23 * * 0-4',
                      $job$select ops.dispatch_workflow('collect.yml')$job$);
-select cron.schedule('collect-weekday-main',    '3-59/5 0-13 * * 1-5',
+select cron.schedule('collect-weekday-main',    '*/5 0-13 * * 1-5',
                      $job$select ops.dispatch_workflow('collect.yml')$job$);
-select cron.schedule('collect-saturday',        '3-59/5 1-13 * * 6',
+select cron.schedule('collect-saturday',        '*/5 1-13 * * 6',
                      $job$select ops.dispatch_workflow('collect.yml')$job$);
-select cron.schedule('collect-sunday',          '3-59/5 1-9 * * 0',
+select cron.schedule('collect-sunday',          '*/5 1-9 * * 0',
                      $job$select ops.dispatch_workflow('collect.yml')$job$);
 
 -- publish is deliberately left on GitHub's own schedule. A missed render is

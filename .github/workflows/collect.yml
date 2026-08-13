@@ -97,9 +97,17 @@ jobs:
             # Outside opening hours the source page legitimately stops
             # refreshing, so its timestamp is stale by design. Enforcing
             # freshness would make the smoke test unrunnable at a sane hour.
+            # No retry budget either: a smoke test should answer quickly.
             args+=(--allow-stale-source)
           else
-            args+=(--open-hours-only)
+            # The source's failure mode is a minute-scale outage, not a
+            # flicker: measured on 2026-08-13, none of 80 successful runs was
+            # rescued by a retry while four failed all three attempts, so the
+            # old 26-second ladder was rescuing nothing. 150s fits the 5-minute
+            # timeout with room to spare -- checkout and toolchain take about
+            # 8s, sync about 5s -- and stays clear of the next pg_cron dispatch
+            # five minutes out, so a slow run never queues behind itself.
+            args+=(--open-hours-only --fetch-budget-seconds 150)
           fi
           python3 fetch_counts.py "${args[@]}"
 

@@ -19,6 +19,10 @@ DEFAULT_DB = "gym_counts.sqlite3"
 DEFAULT_INTERVAL_SECONDS = 300
 DEFAULT_RETRIES = 2
 DEFAULT_RETRY_DELAY_SECONDS = 10
+# Ceiling for the backoff used when a retry budget is in force. The budget, not
+# the delay, decides when to give up; capping the delay keeps a long budget from
+# spending its last minute asleep in a single wait.
+MAX_RETRY_DELAY_SECONDS = 30
 DEFAULT_LOG_DIR = "logs"
 DEFAULT_MAX_SOURCE_AGE_MINUTES = 15
 # Tolerance for the source page's clock running ahead of ours. Readings are
@@ -35,6 +39,13 @@ TAIPEI = ZoneInfo("Asia/Taipei")
 
 # The source page reports its own timestamp as naive Taipei local time.
 SOURCE_TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M"
+SOURCE_TIMESTAMP_PATTERN = re.compile(
+    r"最後更新時間\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2})")
+
+# How much of a page that parsed to nothing is worth putting in the log. Enough
+# to recognise a maintenance notice or a block page; not enough to bury the
+# workflow log under whatever the source decided to serve.
+EMPTY_PAGE_SNIPPET_CHARS = 200
 
 
 def now_taipei():
@@ -93,9 +104,46 @@ def clean_text(value):
     return re.sub(r"\s+", " ", html_lib.unescape(value)).strip()
 
 
+def find_source_timestamp(html):
+    """The page's own "last updated" stamp, or None if it does not carry one."""
+    match = SOURCE_TIMESTAMP_PATTERN.search(clean_text(html))
+    return match.group(1) if match else None
+
+
+def describe_empty_page(html):
+    """Summarise a page that parse_counts() found nothing in.
+
+    Every collection failure to date has looked identical in the log: three
+    "no occupancy rows found" lines and no HTTP error, meaning the source
+    answered 200 with no readings in it. That tells us the page was wrong but
+    not *how*, which is the difference between an outage at the source and a
+    markup change that broke the parser. Both counts below are taken with the
+    same patterns parse_counts() uses, so "the markup moved" shows up as
+    CMCItem present but the fields missing, while an outage shows up as a page
+    that is not the real page at all.
+    """
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", html,
+                            flags=re.S | re.I)
+    title = clean_text(title_match.group(1)) if title_match else ""
+    visible = clean_text(re.sub(r"<(script|style)\b.*?</\1>|<[^>]*>", " ", html,
+                                flags=re.S | re.I))
+    venue_labels = len(re.findall(r'<div class="IT">', html))
+    count_fields = len(re.findall(
+        r'<div class="ICI"><span>\d+</span>', html, flags=re.S))
+
+    return " ".join([
+        f"bytes={len(html)}",
+        f"CMCItem={html.count('CMCItem')}",
+        f"venue-labels={venue_labels}",
+        f"count-fields={count_fields}",
+        f"source-timestamp={find_source_timestamp(html) or 'none'}",
+        f"title={title!r}",
+        f"text={visible[:EMPTY_PAGE_SNIPPET_CHARS]!r}",
+    ])
+
+
 def parse_counts(html):
-    update_match = re.search(r"最後更新時間\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2})", clean_text(html))
-    source_updated_at = update_match.group(1) if update_match else None
+    source_updated_at = find_source_timestamp(html)
 
     section_matches = list(
         re.finditer(r'<div class="CMCItem">', html, flags=re.S)
@@ -316,13 +364,29 @@ def validate_rows(rows, fetched_at, expect_venues=None,
 
 def fetch_and_save(conn, url, fetched_at=None, exit_on_error=True, retries=DEFAULT_RETRIES,
                    expect_venues=None,
-                   max_source_age_minutes=DEFAULT_MAX_SOURCE_AGE_MINUTES):
-    rows = []
+                   max_source_age_minutes=DEFAULT_MAX_SOURCE_AGE_MINUTES,
+                   budget_seconds=None):
+    """Fetch one batch, retrying until it works or the allowance runs out.
 
-    for attempt in range(retries + 1):
-        if attempt:
-            print(f"retrying fetch ({attempt}/{retries})", flush=True)
-            time.sleep(DEFAULT_RETRY_DELAY_SECONDS)
+    Two allowances, and which one applies matters. Without `budget_seconds` the
+    old fixed ladder stands: `retries` extra attempts, ten seconds apart. With
+    it, retrying is bounded by wall clock instead of by count.
+
+    The count is the wrong bound for the failure this actually sees. Measured on
+    2026-08-13: of 80 consecutive successful runs, not one was rescued by a
+    retry, while four runs failed all three attempts. Were requests failing
+    independently, a 1% run-failure rate would need a per-request rate near 20%,
+    and roughly a third of those 80 runs would have visibly recovered. None did.
+    So the source does not flicker -- it goes away, for longer than the whole
+    26-second ladder, and a ladder sized in seconds cannot reach across it.
+    """
+    rows = []
+    started = time.monotonic()
+    delay = DEFAULT_RETRY_DELAY_SECONDS
+    attempt = 0
+
+    while True:
+        attempt += 1
 
         try:
             html = fetch_html(url)
@@ -333,26 +397,49 @@ def fetch_and_save(conn, url, fetched_at=None, exit_on_error=True, retries=DEFAU
             # campus network, much less so over the public internet.
             print(f"fetch failed: {error!r}", file=sys.stderr)
             rows = []
-            continue
+        else:
+            rows = parse_counts(html)
+            if rows:
+                # Freshness is a question about the moment of reading, not about
+                # the slot the row will be filed under. Judging it against a
+                # pinned `fetched_at` made a batch rescued three minutes into a
+                # long retry look like a page whose clock ran ahead, and
+                # SOURCE_CLOCK_SKEW_MINUTES threw the rescue away.
+                problems = validate_rows(
+                    rows, now_taipei(), expect_venues, max_source_age_minutes)
+                if not problems:
+                    break
+                for problem in problems:
+                    print(f"rejected batch: {problem}", file=sys.stderr)
+                rows = []
+            else:
+                print(f"no occupancy rows found (attempt {attempt}): "
+                      f"{describe_empty_page(html)}", file=sys.stderr)
 
-        rows = parse_counts(html)
-        if not rows:
-            print("no occupancy rows found", file=sys.stderr)
-            continue
-
-        problems = validate_rows(
-            rows, fetched_at or now_taipei(), expect_venues, max_source_age_minutes)
-        if not problems:
+        elapsed = time.monotonic() - started
+        if budget_seconds is None:
+            if attempt > retries:
+                break
+        elif elapsed + delay > budget_seconds:
+            print(f"giving up after {attempt} attempts, {elapsed:.0f}s "
+                  f"(budget {budget_seconds}s)", file=sys.stderr)
             break
 
-        for problem in problems:
-            print(f"rejected batch: {problem}", file=sys.stderr)
-        rows = []
+        print(f"retrying fetch in {delay}s (attempt {attempt}, "
+              f"{elapsed:.0f}s elapsed)", flush=True)
+        time.sleep(delay)
+        if budget_seconds is not None:
+            delay = min(int(delay * 1.5), MAX_RETRY_DELAY_SECONDS)
 
     if not rows:
         if exit_on_error:
             sys.exit(1)
         return False
+
+    if attempt > 1:
+        # The only measurement we get of how long the source was away.
+        print(f"recovered on attempt {attempt} after "
+              f"{time.monotonic() - started:.0f}s", flush=True)
 
     saved_at = save_rows(conn, rows, fetched_at=fetched_at)
     for row in rows:
@@ -366,7 +453,8 @@ def fetch_and_save(conn, url, fetched_at=None, exit_on_error=True, retries=DEFAU
 
 def run_loop(conn, url, interval_seconds, open_hours_only,
              expect_venues=None,
-             max_source_age_minutes=DEFAULT_MAX_SOURCE_AGE_MINUTES):
+             max_source_age_minutes=DEFAULT_MAX_SOURCE_AGE_MINUTES,
+             budget_seconds=None):
     while True:
         now = now_taipei()
         target = next_interval_time(now, interval_seconds)
@@ -382,6 +470,7 @@ def run_loop(conn, url, interval_seconds, open_hours_only,
             conn, url, fetched_at=target, exit_on_error=False,
             expect_venues=expect_venues,
             max_source_age_minutes=max_source_age_minutes,
+            budget_seconds=budget_seconds,
         )
         time.sleep(1)
 
@@ -399,6 +488,7 @@ def main():
     parser.add_argument("--expect-venues", default=None, help="Comma-separated venue names that must all be present, with nothing else. Example: 健身中心,室內游泳池")
     parser.add_argument("--max-source-age-minutes", type=int, default=DEFAULT_MAX_SOURCE_AGE_MINUTES, help=f"Reject a batch whose source timestamp is older than this. Default: {DEFAULT_MAX_SOURCE_AGE_MINUTES}.")
     parser.add_argument("--allow-stale-source", action="store_true", help="Skip the source-timestamp freshness check. Needed for smoke tests outside opening hours, when the page legitimately stops updating.")
+    parser.add_argument("--fetch-budget-seconds", type=int, default=None, help="Keep retrying for up to this many seconds instead of stopping after a fixed number of attempts. The source's outages last minutes, so a count-based ladder measured in seconds never reaches across one.")
     args = parser.parse_args()
 
     expect_venues = None
@@ -422,6 +512,7 @@ def main():
             conn, args.url, args.interval, args.open_hours_only,
             expect_venues=expect_venues,
             max_source_age_minutes=max_source_age,
+            budget_seconds=args.fetch_budget_seconds,
         )
         return
 
@@ -434,6 +525,7 @@ def main():
         conn, args.url, fetched_at=now,
         expect_venues=expect_venues,
         max_source_age_minutes=max_source_age,
+        budget_seconds=args.fetch_budget_seconds,
     )
 
 

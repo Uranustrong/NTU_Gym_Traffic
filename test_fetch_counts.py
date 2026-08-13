@@ -261,5 +261,195 @@ class FetchRetryTests(unittest.TestCase):
         save.assert_not_called()
 
 
+class EmptyPageDiagnosticTests(unittest.TestCase):
+    """describe_empty_page() -- what the source actually served.
+
+    Every collect failure so far has been "no occupancy rows found" three times
+    over, with no HTTP error: the page answered 200 with no CMCItem markup. The
+    log said nothing about what it *did* contain, so the outage could not be
+    told apart from a markup change. This is that missing evidence.
+    """
+
+    def test_a_maintenance_page_is_recognisably_not_the_real_page(self):
+        html = ("<html><head><title>系統維護中</title></head>"
+                "<body><p>系統維護中，請稍後再試。</p></body></html>")
+        description = fetch_counts.describe_empty_page(html)
+
+        self.assertIn("CMCItem=0", description)
+        self.assertIn("系統維護中", description)
+        self.assertIn(f"bytes={len(html)}", description)
+
+    def test_items_rendered_without_counts_are_distinguished_from_no_items(self):
+        # The failure mode this separates: a page that laid out both venues but
+        # filled in no numbers is a source-side data problem; a page with no
+        # CMCItem at all is a different page entirely.
+        html = ('<div class="CMCItem"><div class="IT">健身中心</div></div>'
+                '<div class="CMCItem"><div class="IT">室內游泳池</div></div>')
+        description = fetch_counts.describe_empty_page(html)
+
+        self.assertIn("CMCItem=2", description)
+        self.assertIn("venue-labels=2", description)
+        self.assertIn("count-fields=0", description)
+
+    def test_the_pages_own_timestamp_is_surfaced_when_present(self):
+        html = '<div>最後更新時間 2026-08-13 19:10</div>'
+        self.assertIn("2026-08-13 19:10", fetch_counts.describe_empty_page(html))
+
+    def test_a_page_without_a_timestamp_says_so(self):
+        self.assertIn("source-timestamp=none",
+                      fetch_counts.describe_empty_page("<html></html>"))
+
+    def test_the_snippet_is_bounded(self):
+        # Whatever the source serves, it must not flood the workflow log.
+        description = fetch_counts.describe_empty_page("<p>" + "x" * 5000 + "</p>")
+        self.assertLess(len(description), 600)
+
+
+class FetchBudgetTests(unittest.TestCase):
+    """Deadline-bounded retrying.
+
+    Measured on 2026-08-13: across 80 successful runs, zero were rescued by a
+    retry, while four runs failed all three attempts. Independent per-request
+    failures at a 1% run-failure rate would have shown roughly a third of those
+    80 runs recovering. They did not -- so the source is either fine on the
+    first try or down for longer than the whole 26-second ladder. The window has
+    to be measured in minutes to catch anything at all.
+    """
+
+    def setUp(self):
+        sleep = mock.patch("fetch_counts.time.sleep")
+        self.sleep = sleep.start()
+        self.addCleanup(sleep.stop)
+
+        # A clock that advances only by what the code sleeps, so the budget is
+        # exercised deterministically rather than in real time.
+        self.elapsed = 0.0
+
+        def advance(seconds):
+            self.elapsed += seconds
+
+        self.sleep.side_effect = advance
+        monotonic = mock.patch("fetch_counts.time.monotonic",
+                               side_effect=lambda: self.elapsed)
+        monotonic.start()
+        self.addCleanup(monotonic.stop)
+
+    def test_a_budget_keeps_retrying_well_past_the_plain_retry_count(self):
+        with mock.patch("fetch_counts.fetch_html", return_value="<html/>"), \
+                mock.patch("fetch_counts.parse_counts", return_value=[]) as parse:
+            with self.assertRaises(SystemExit):
+                fetch_counts.fetch_and_save(
+                    conn=None, url="https://example.invalid",
+                    retries=2, budget_seconds=150)
+
+        # The old ladder was three attempts in 26 seconds. A 150-second budget
+        # has to buy substantially more than that or it buys nothing.
+        self.assertGreater(parse.call_count, 5)
+        self.assertLessEqual(self.elapsed, 150)
+
+    def test_without_a_budget_the_retry_count_still_rules(self):
+        with mock.patch("fetch_counts.fetch_html", return_value="<html/>"), \
+                mock.patch("fetch_counts.parse_counts", return_value=[]) as parse:
+            with self.assertRaises(SystemExit):
+                fetch_counts.fetch_and_save(
+                    conn=None, url="https://example.invalid", retries=2)
+
+        self.assertEqual(parse.call_count, 3)
+
+    def test_backoff_grows_and_is_capped(self):
+        with mock.patch("fetch_counts.fetch_html", return_value="<html/>"), \
+                mock.patch("fetch_counts.parse_counts", return_value=[]):
+            with self.assertRaises(SystemExit):
+                fetch_counts.fetch_and_save(
+                    conn=None, url="https://example.invalid",
+                    retries=2, budget_seconds=200)
+
+        delays = [call.args[0] for call in self.sleep.call_args_list]
+        self.assertEqual(delays[0], fetch_counts.DEFAULT_RETRY_DELAY_SECONDS)
+        self.assertGreater(delays[1], delays[0])
+        self.assertTrue(all(d <= fetch_counts.MAX_RETRY_DELAY_SECONDS
+                            for d in delays))
+
+    def test_a_late_rescue_is_saved_under_the_slot_it_was_scheduled_for(self):
+        # fetched_at labels the 5-minute slot; source_updated_at carries the
+        # moment the reading actually describes. A rescue two minutes in belongs
+        # to its slot, not to a ragged off-grid timestamp.
+        slot = taipei((2026, 8, 13), 19, 10)
+        good = [
+            {"venue": "健身中心", "current_count": 69, "comfortable_count": 80,
+             "capacity_count": 161, "source_updated_at": "2026-08-13 19:12"},
+            {"venue": "室內游泳池", "current_count": 20, "comfortable_count": 50,
+             "capacity_count": 130, "source_updated_at": "2026-08-13 19:12"},
+        ]
+
+        with mock.patch("fetch_counts.fetch_html", return_value="<html/>"), \
+                mock.patch("fetch_counts.parse_counts",
+                           side_effect=[[], [], [], good]), \
+                mock.patch("fetch_counts.now_taipei",
+                           return_value=taipei((2026, 8, 13), 19, 12)), \
+                mock.patch("fetch_counts.save_rows") as save:
+            self.assertTrue(fetch_counts.fetch_and_save(
+                conn=None, url="https://example.invalid",
+                fetched_at=slot, retries=2, budget_seconds=150,
+                expect_venues={"健身中心", "室內游泳池"}))
+
+        save.assert_called_once()
+        self.assertEqual(save.call_args.kwargs["fetched_at"], slot)
+
+    def test_a_rescue_is_not_rejected_as_a_timestamp_from_the_future(self):
+        """Regression guard for the trap that widening the window creates.
+
+        fetched_at is pinned to the slot start, so a batch rescued three
+        minutes in carries a source timestamp three minutes *newer* than it.
+        Judging freshness against the pinned value made that look like the
+        page's clock running ahead -- SOURCE_CLOCK_SKEW_MINUTES is 2 -- and the
+        rescued reading was thrown away. Freshness is a question about now.
+        """
+        slot = taipei((2026, 8, 13), 19, 10)
+        rescued = [
+            {"venue": "健身中心", "current_count": 69, "comfortable_count": 80,
+             "capacity_count": 161, "source_updated_at": "2026-08-13 19:13"},
+            {"venue": "室內游泳池", "current_count": 20, "comfortable_count": 50,
+             "capacity_count": 130, "source_updated_at": "2026-08-13 19:13"},
+        ]
+
+        with mock.patch("fetch_counts.fetch_html", return_value="<html/>"), \
+                mock.patch("fetch_counts.parse_counts", return_value=rescued), \
+                mock.patch("fetch_counts.now_taipei",
+                           return_value=taipei((2026, 8, 13), 19, 13)), \
+                mock.patch("fetch_counts.save_rows") as save:
+            self.assertTrue(fetch_counts.fetch_and_save(
+                conn=None, url="https://example.invalid",
+                fetched_at=slot, retries=2, budget_seconds=150,
+                expect_venues={"健身中心", "室內游泳池"}))
+
+        save.assert_called_once()
+
+    def test_a_genuinely_frozen_source_is_still_rejected(self):
+        # The freshness check must not have been softened into uselessness by
+        # the change above: a page whose timestamp stopped advancing is exactly
+        # what --expect-venues and the age limit exist to catch.
+        slot = taipei((2026, 8, 13), 19, 10)
+        frozen = [
+            {"venue": "健身中心", "current_count": 69, "comfortable_count": 80,
+             "capacity_count": 161, "source_updated_at": "2026-08-13 18:30"},
+            {"venue": "室內游泳池", "current_count": 20, "comfortable_count": 50,
+             "capacity_count": 130, "source_updated_at": "2026-08-13 18:30"},
+        ]
+
+        with mock.patch("fetch_counts.fetch_html", return_value="<html/>"), \
+                mock.patch("fetch_counts.parse_counts", return_value=frozen), \
+                mock.patch("fetch_counts.now_taipei",
+                           return_value=taipei((2026, 8, 13), 19, 12)), \
+                mock.patch("fetch_counts.save_rows") as save:
+            with self.assertRaises(SystemExit):
+                fetch_counts.fetch_and_save(
+                    conn=None, url="https://example.invalid",
+                    fetched_at=slot, retries=1, budget_seconds=60,
+                    expect_venues={"健身中心", "室內游泳池"})
+
+        save.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

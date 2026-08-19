@@ -55,6 +55,13 @@ GRANT SELECT ON public.occupancy TO gym_reader;
 GRANT SELECT ON public.weekly_occupancy_slots TO gym_reader;
 GRANT SELECT ON public.current_vs_history TO gym_reader;
 
+-- The objects added with the closures table. The new views are
+-- security_invoker (see 004), so Grafana reaching weekly_occupancy_slots now
+-- also has to be able to read what that view reads.
+GRANT SELECT ON public.closures TO gym_reader;
+GRANT SELECT ON public.closure_periods TO gym_reader;
+GRANT SELECT ON public.occupancy_excluding_closures TO gym_reader;
+
 -- Needed by the backup, not by any query: pg_dump --data-only reads
 -- occupancy_id_seq to record last_value, so a restore resumes the sequence
 -- instead of colliding with existing ids. Without this the backup fails with

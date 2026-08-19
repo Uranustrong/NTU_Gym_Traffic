@@ -13,10 +13,18 @@
 -- Nothing here restricts our own access: a table owner bypasses RLS unless
 -- FORCE ROW LEVEL SECURITY is set, which it deliberately is not.
 
-ALTER VIEW public.weekly_occupancy_slots SET (security_invoker = true);
-ALTER VIEW public.current_vs_history     SET (security_invoker = true);
+ALTER VIEW public.weekly_occupancy_slots       SET (security_invoker = true);
+ALTER VIEW public.current_vs_history           SET (security_invoker = true);
+ALTER VIEW public.closure_periods              SET (security_invoker = true);
+ALTER VIEW public.occupancy_excluding_closures SET (security_invoker = true);
 
 ALTER TABLE public.occupancy ENABLE ROW LEVEL SECURITY;
+
+-- Not for secrecy -- a closure is a public announcement. PostgREST exposes
+-- every table and view in `public`, and an anon-readable one would be an
+-- endpoint that never passes through api_private.rate_limit_check(). The two
+-- SECURITY DEFINER wrappers are the only way in, and they are metered.
+ALTER TABLE public.closures ENABLE ROW LEVEL SECURITY;
 
 -- anon/authenticated only exist on Supabase; skip cleanly on local Postgres.
 DO $$
@@ -28,7 +36,10 @@ BEGIN
             EXECUTE format(
                 'REVOKE ALL ON public.occupancy, '
                 'public.weekly_occupancy_slots, '
-                'public.current_vs_history FROM %I', role_name);
+                'public.current_vs_history, '
+                'public.closures, '
+                'public.closure_periods, '
+                'public.occupancy_excluding_closures FROM %I', role_name);
             EXECUTE format(
                 'REVOKE ALL ON SEQUENCE public.occupancy_id_seq FROM %I',
                 role_name);
@@ -54,4 +65,11 @@ CREATE POLICY gym_writer_select ON public.occupancy
     FOR SELECT TO gym_writer USING (true);
 
 CREATE POLICY gym_reader_select ON public.occupancy
+    FOR SELECT TO gym_reader USING (true);
+
+DROP POLICY IF EXISTS gym_reader_closures_select ON public.closures;
+
+-- gym_reader reaches closures only through the security_invoker views, but RLS
+-- does not care how it got there.
+CREATE POLICY gym_reader_closures_select ON public.closures
     FOR SELECT TO gym_reader USING (true);

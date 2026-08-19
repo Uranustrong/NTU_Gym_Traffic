@@ -1,7 +1,10 @@
-"""Unit tests for the closure-span formatter inside tools/public_template.html.
+"""Unit tests for the browser-side logic of the public page.
 
-The template is a browser file, not an importable module, so the one piece of
-it with real logic is fenced between marker comments and executed under node.
+Two sources, one technique. `tools/public_template.html` holds the page shell;
+`grafana/weekly-dashboard.json` holds the panel code the page reuses, extracted
+from the dashboard by tools/render_public_html.py. Neither is an importable
+module, so the pieces with real logic are fenced between marker comments and
+executed under node.
 Skips when node is absent -- the same shape as the database tests, which skip
 rather than fail when unarmed, so `python3 -m unittest discover` stays safe to
 run anywhere.
@@ -20,15 +23,31 @@ import unittest
 from pathlib import Path
 
 TEMPLATE = Path(__file__).with_name("tools").joinpath("public_template.html")
+DASHBOARD = Path(__file__).with_name("grafana").joinpath("weekly-dashboard.json")
 NODE = shutil.which("node")
 
 
-def extract_block(name):
+def fenced(text, name):
     """Return the JS fenced between `// --- <name>:begin` and `:end`."""
-    text = TEMPLATE.read_text(encoding="utf-8")
     begin = text.index(f"// --- {name}:begin")
     end = text.index(f"// --- {name}:end")
     return text[begin:end]
+
+
+def extract_block(name):
+    return fenced(TEMPLATE.read_text(encoding="utf-8"), name)
+
+
+def extract_panel_block(panel_id, name):
+    """Same, but from a panel's getOption inside the dashboard JSON."""
+    dashboard = json.loads(DASHBOARD.read_text(encoding="utf-8"))
+    panel = next(p for p in dashboard["panels"] if p.get("id") == panel_id)
+    return fenced(panel["options"]["getOption"], name)
+
+
+def run_js(script):
+    return subprocess.run([NODE, "-e", script], text=True,
+                          capture_output=True, check=True).stdout
 
 
 @unittest.skipIf(NODE is None, "node not installed")
@@ -76,6 +95,125 @@ class ClosureSpanTests(unittest.TestCase):
         # older builds. The banner must not depend on that.
         self.assertIn("Sep ", self.span("2026-09-01T00:00:00+08:00",
                                         "2026-09-30T00:00:00+08:00") + " ")
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class ClosureBandTests(unittest.TestCase):
+    """Panel 3 maps a closure's timestamps onto ordinal category indices.
+
+    The axis has one slot per reading, so a band cannot be expressed in time
+    at all -- it has to be resolved to the first and last reading the closure
+    covers. Getting that wrong is silent: an empty range becomes a zero-width
+    markArea drawn at the origin rather than a visible error.
+    """
+
+    # 09:00, 09:05, ... 09:25 on 2026-08-24, the fourth Monday.
+    TIMES = [f"2026-08-24T09:{m:02d}:00+08:00" for m in (0, 5, 10, 15, 20, 25)]
+
+    def bands(self, closures, times=None):
+        script = (
+            extract_panel_block(3, "closure-bands")
+            + "\nconst t = " + json.dumps(times if times is not None else self.TIMES)
+            + ".map((s) => Date.parse(s));"
+            + "\nprocess.stdout.write(JSON.stringify("
+              "closureBands(t, " + json.dumps(closures) + ")));"
+        )
+        return json.loads(run_js(script))
+
+    def closure(self, frm, to, reason="Monthly maintenance"):
+        return {"venue": "健身中心", "from": frm, "to": to, "reason": reason}
+
+    def test_a_closure_before_the_window_draws_nothing(self):
+        self.assertEqual(self.bands([self.closure(
+            "2026-08-24T07:00:00+08:00", "2026-08-24T08:00:00+08:00")]), [])
+
+    def test_a_closure_after_the_window_draws_nothing(self):
+        self.assertEqual(self.bands([self.closure(
+            "2026-08-24T10:00:00+08:00", "2026-08-24T11:00:00+08:00")]), [])
+
+    def test_a_closure_covering_everything_spans_the_whole_axis(self):
+        self.assertEqual(self.bands([self.closure(
+            "2026-08-24T00:00:00+08:00", "2026-08-25T00:00:00+08:00")]),
+            [{"from": 0, "to": 5, "reason": "Monthly maintenance"}])
+
+    def test_a_closure_covering_the_middle_clamps_to_real_readings(self):
+        # 09:07 - 09:18 contains the 09:10 and 09:15 readings only.
+        self.assertEqual(self.bands([self.closure(
+            "2026-08-24T09:07:00+08:00", "2026-08-24T09:18:00+08:00")]),
+            [{"from": 2, "to": 3, "reason": "Monthly maintenance"}])
+
+    def test_the_range_is_half_open_at_both_ends(self):
+        # Starts exactly on the 09:05 reading, ends exactly on 09:20: the
+        # 09:20 reading is outside, the 09:05 one is inside.
+        self.assertEqual(self.bands([self.closure(
+            "2026-08-24T09:05:00+08:00", "2026-08-24T09:20:00+08:00")]),
+            [{"from": 1, "to": 3, "reason": "Monthly maintenance"}])
+
+    def test_a_closure_matching_one_reading_is_still_a_band(self):
+        self.assertEqual(self.bands([self.closure(
+            "2026-08-24T09:08:00+08:00", "2026-08-24T09:12:00+08:00")]),
+            [{"from": 2, "to": 2, "reason": "Monthly maintenance"}])
+
+    def test_an_empty_window_draws_nothing(self):
+        # The venue has no readings at all in the window -- a closed venue
+        # whose collector was also down. An unguarded implementation returns
+        # a band from -1 to -1 here.
+        self.assertEqual(self.bands([self.closure(
+            "2026-08-24T00:00:00+08:00", "2026-08-25T00:00:00+08:00")],
+            times=[]), [])
+
+    def test_two_closures_produce_two_bands(self):
+        self.assertEqual(
+            self.bands([
+                self.closure("2026-08-24T08:59:00+08:00",
+                             "2026-08-24T09:06:00+08:00", "Renovation"),
+                self.closure("2026-08-24T09:19:00+08:00",
+                             "2026-08-24T09:30:00+08:00"),
+            ]),
+            [{"from": 0, "to": 1, "reason": "Renovation"},
+             {"from": 4, "to": 5, "reason": "Monthly maintenance"}])
+
+    def test_overlapping_closures_shade_once(self):
+        """2026-08-24 is inside the renovation *and* is a fourth Monday.
+
+        Both rows come back from window_closure_rows, covering the same
+        readings. One band each would shade the morning twice -- ECharts
+        composites the fills, so it renders visibly darker -- and stack two
+        labels at the same position.
+        """
+        self.assertEqual(
+            self.bands([
+                self.closure("2026-08-17T00:00:00+08:00",
+                             "2026-09-21T00:00:00+08:00", "Renovation"),
+                self.closure("2026-08-24T00:00:00+08:00",
+                             "2026-08-24T17:00:00+08:00"),
+            ]),
+            [{"from": 0, "to": 5, "reason": "Renovation"}])
+
+    def test_closures_meeting_end_to_end_keep_their_own_labels(self):
+        """Back-to-back closures are two bands, not one.
+
+        Deduplication is for a closure *nested* in another, where one shade
+        would be drawn twice. Two distinct reasons are two facts, and merging
+        them would silently discard the second one's label.
+        """
+        self.assertEqual(
+            self.bands([
+                self.closure("2026-08-24T09:00:00+08:00",
+                             "2026-08-24T09:15:00+08:00", "First"),
+                self.closure("2026-08-24T09:15:00+08:00",
+                             "2026-08-24T09:30:00+08:00", "Second"),
+            ]),
+            [{"from": 0, "to": 2, "reason": "First"},
+             {"from": 3, "to": 5, "reason": "Second"}])
+
+    def test_no_closures_at_all_is_the_grafana_path(self):
+        # Grafana's context has no windowClosures, so the panel passes
+        # undefined and must get an empty list rather than throwing.
+        script = (extract_panel_block(3, "closure-bands")
+                  + "\nprocess.stdout.write(JSON.stringify("
+                    "closureBands([1, 2, 3], undefined)));")
+        self.assertEqual(json.loads(run_js(script)), [])
 
 
 if __name__ == "__main__":

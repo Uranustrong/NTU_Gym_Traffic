@@ -279,6 +279,31 @@ AS $$
     ORDER BY c.venue, c.starts_at;
 $$;
 
+-- The same rows, asked the other question: which closures *overlap* a range.
+-- Panel 3 draws a seven-day window and needs the closures that touch it, which
+-- is not what active_closure_rows() answers -- that one is point-in-interval
+-- (starts_at <= p_at < ends_at) and a zero-width window does not reduce to it,
+-- because overlap excludes the instant a closure begins. Folding the two would
+-- mean a mode flag on a function that already has a verified acceptance path,
+-- so this is a second function rather than a parameter.
+--
+-- Returned unclipped on purpose: the caller knows its own window, and the band
+-- it draws has to be clamped to real readings rather than to the window edge.
+CREATE OR REPLACE FUNCTION api_private.window_closure_rows(
+    p_from timestamptz, p_to timestamptz)
+RETURNS TABLE (venue text, starts_at timestamptz, ends_at timestamptz,
+               reason text, source text)
+LANGUAGE sql
+STABLE
+SET search_path = ''
+AS $$
+    SELECT c.venue, c.starts_at, c.ends_at, c.reason, c.source
+    FROM public.closure_periods c
+    WHERE c.starts_at < p_to
+      AND c.ends_at   > p_from
+    ORDER BY c.venue, c.starts_at;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Panel 1 -- Popular Times. Three primitives, not one.
 -- ---------------------------------------------------------------------------
@@ -738,6 +763,28 @@ BEGIN
                            'reason', c.reason,
                            'source', c.source))
                 FROM api_private.active_closure_rows() c), '[]'::jsonb),
+            -- Every closure touching the panel-3 window, so the line chart can
+            -- shade the shut stretches instead of drawing a flat zero the
+            -- viewer has to guess at. Separate from activeClosures rather than
+            -- replacing it: that one drives the banner and the live card and
+            -- means "right now", which is a different question and a different
+            -- answer the moment a closure ends mid-window.
+            -- ORDER BY inside the aggregate, not just inside the function.
+            -- The page labels a band with the first closure covering it, so
+            -- array order is load-bearing here: on 2026-08-24 the renovation
+            -- and the fourth Monday both cover the morning, and whichever
+            -- comes first names the band. A set-returning function's own
+            -- ORDER BY is not a promise jsonb_agg will consume it in that
+            -- order.
+            'windowClosures', coalesce((
+                SELECT jsonb_agg(jsonb_build_object(
+                           'venue',  c.venue,
+                           'from',   c.starts_at,
+                           'to',     c.ends_at,
+                           'reason', c.reason,
+                           'source', c.source)
+                       ORDER BY c.starts_at, c.venue)
+                FROM api_private.window_closure_rows(t_from, t_to) c), '[]'::jsonb),
             'panel1Now', coalesce((SELECT jsonb_object_agg(v.venue,
                               api_private.gym_panel1_series(v.venue, false, true))
                           FROM v), '{}'::jsonb),
@@ -785,6 +832,7 @@ DECLARE
     internal_fns text[] := ARRAY[
         'api_private.rate_limit_check(text)',
         'api_private.active_closure_rows(timestamptz)',
+        'api_private.window_closure_rows(timestamptz,timestamptz)',
         'api_private.gym_heatmap_body()',
         'api_private.refresh_gym_heatmap_cache()'
     ];

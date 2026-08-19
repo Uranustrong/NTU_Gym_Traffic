@@ -80,6 +80,17 @@ def run_psql(script, url=None, extra_args=()):
     ).stdout.strip()
 
 
+def with_database(url, database):
+    """The same server, a different database. For tests that need `public`.
+
+    A schema suffix is enough when a test owns only its own objects, but the
+    migrations write into `public` by name, so those tests need a throwaway
+    database instead.
+    """
+    parts = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit(parts._replace(path=f"/{database}"))
+
+
 def with_search_path(url, schema):
     """Point a URL at one schema using libpq connection options."""
     parts = urllib.parse.urlsplit(url)

@@ -124,3 +124,45 @@ cheapest place to put this. Store the reading rather than trusting the table to
 persist: it is `UNLOGGED`, so a restart resets it to zero, and
 `pg_stat_statements` can be reset out from under a reader too — record deltas,
 not absolutes.
+
+---
+
+## Public holidays are not modelled, only found after the fact
+
+**Idea:** the centre shuts on national holidays, and nothing predicts that.
+2026-06-19 (端午節) was found only by scanning for venue-days far below their
+own weekday+hour expectation, and seeded by hand in
+`sql/grafana_weekly_views.sql`.
+
+**Status:** deliberately reactive. One observation is not a rule — the same
+reasoning that makes `maintenance_venues` name its two venues instead of
+matching every venue. **中秋節 2026-09-25 is a Friday** and will understate
+Fridays the same way until someone runs the scan again and adds a row.
+
+**The scan, so it does not have to be reinvented:** score every (venue, day)
+as `sum(actual) / sum(expected)` where expected is the mean for that
+(venue, ISODOW, hour) over days not already known to be closures, then look
+for runs of ≥3 consecutive open hours under 35%. Validate it by checking that
+the known closures sink to the bottom on their own — a scan that only looks
+for whole days of zeros misses 2026-08-18, where the renovation still read a
+flat 7 because the contractors were inside.
+
+---
+
+## Collection fires about 11% more often than designed
+
+**Idea:** since the move to GitHub Actions on 2026-08-09 each venue gets
+203–214 rows a day against a nominal 192 (16 open hours × 12). `pg_cron` and
+GitHub's own `schedule` both wake the same slot, and the extra run lands one to
+four minutes off the 5-minute grid.
+
+**Status:** measured, not fixed, and **not a correctness problem**. No venue
+has the same `source_updated_at` twice, so nothing is double-counted — the
+extra rows are genuinely distinct observations. The effect on the mean is
+−0.014 and +0.018 people. What it does cost is ~11% more runner minutes, rows
+and Supabase writes than the design assumed.
+
+**If it is ever worth fixing:** the GitHub `schedule` block is the fallback for
+`pg_cron` dying (see the PAT expiry note in CLAUDE.md), so it cannot simply be
+deleted. Making `collect.yml` a no-op when a reading for the current slot
+already exists would be the cheap version.

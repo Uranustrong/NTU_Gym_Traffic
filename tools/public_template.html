@@ -181,7 +181,7 @@
     // ---- runtime data -----------------------------------------------------
     const DATA = { venues: [], panel1History: {}, panel1Now: {}, panel2: {},
                    panel3: {}, panel4: null,
-                   rawClosures: [], activeClosures: [] };
+                   rawClosures: [], activeClosures: [], windowClosures: [] };
     let lastGood = { dataAsOf: null, servedAt: null, freshnessExpected: null, fromCache: false };
 
     const state = { venue: null, palette: "slate", granularity: "60min", metric: "avg_count" };
@@ -198,6 +198,11 @@
       DATA.panel4 = p.panel4 ? translateField(p.panel4, "venue") : null;
       for (const v of Object.keys(DATA.panel3)) translateField(DATA.panel3[v], "metric");
       DATA.rawClosures = p.activeClosures || [];
+      // Not re-filtered against the clock the way rawClosures is. These are
+      // the closures overlapping the same window panel3 was built for, and
+      // both arrive in the same response -- including the cached one -- so a
+      // band drawn from cache always matches the line drawn from cache.
+      DATA.windowClosures = p.windowClosures || [];
       refilterClosures();
     }
 
@@ -245,6 +250,11 @@
         // field, so panel 4's JS sees undefined there and renders exactly as
         // it does today.
         closures: DATA.activeClosures,
+        // Panel 3 only ever draws one venue, and the panel cannot do the
+        // filtering itself: replaceVariables hands it the English display
+        // name, never the Chinese key the API returns.
+        windowClosures: DATA.windowClosures.filter(
+          (c) => c.venue === state.venue),
         grafana: {
           replaceVariables: (s) => String(s)
             .split("${palette}").join(state.palette)

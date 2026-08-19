@@ -45,6 +45,16 @@
       border: 1px solid #43262a; border-radius: 6px; background: #1a1114;
       color: #c9736b; font-size: 13px; line-height: 1.7;
     }
+    /* Renovation / maintenance notice. The elements are created and removed,
+       not hidden -- an empty bordered box reads as "something is broken with
+       the page" rather than "nothing is closed". */
+    .closure {
+      margin: 14px 24px 0; padding: 10px 14px;
+      border: 1px solid #4a3f22; border-left-width: 3px; border-radius: 4px;
+      background: #191509; color: #d0a24c; font-size: 13px; line-height: 1.6;
+    }
+    .closure b { color: #e6c07b; font-weight: 500; }
+    .closure a { color: #b8925a; }
   </style>
 </head>
 <body>
@@ -80,6 +90,7 @@
     <div class="ts" id="status">Loading…</div>
   </header>
   <div id="fatal"></div>
+  <div id="closures-anchor" hidden></div>
   <main>
     <div id="panel1" class="panel"></div>
     <div id="panel4" class="panel"></div>
@@ -168,7 +179,9 @@
     }
 
     // ---- runtime data -----------------------------------------------------
-    const DATA = { venues: [], panel1History: {}, panel1Now: {}, panel2: {}, panel3: {}, panel4: null };
+    const DATA = { venues: [], panel1History: {}, panel1Now: {}, panel2: {},
+                   panel3: {}, panel4: null,
+                   rawClosures: [], activeClosures: [] };
     let lastGood = { dataAsOf: null, servedAt: null, freshnessExpected: null, fromCache: false };
 
     const state = { venue: null, palette: "slate", granularity: "60min", metric: "avg_count" };
@@ -184,6 +197,8 @@
       DATA.panel3 = p.panel3 || {};
       DATA.panel4 = p.panel4 ? translateField(p.panel4, "venue") : null;
       for (const v of Object.keys(DATA.panel3)) translateField(DATA.panel3[v], "metric");
+      DATA.rawClosures = p.activeClosures || [];
+      refilterClosures();
     }
 
     // Only gym_live decides freshness, and it is recomputed from scratch each
@@ -226,6 +241,10 @@
     function makeContext(series) {
       return {
         panel: { data: { series: series ? [series] : [] } },
+        // Public-page-only. Grafana builds its own context and has no such
+        // field, so panel 4's JS sees undefined there and renders exactly as
+        // it does today.
+        closures: DATA.activeClosures,
         grafana: {
           replaceVariables: (s) => String(s)
             .split("${palette}").join(state.palette)
@@ -271,7 +290,10 @@
       chart.setOption(option || {}, true);
     }
 
-    function renderAll() { Object.keys(PANEL_IDS).forEach(renderPanel); }
+    function renderAll() {
+      renderClosures();
+      Object.keys(PANEL_IDS).forEach(renderPanel);
+    }
 
     // ---- selectors --------------------------------------------------------
     const venueSel = document.getElementById("sel-venue");
@@ -308,6 +330,136 @@
     window.addEventListener("resize", () => {
       Object.values(charts).forEach((c) => c.resize());
     });
+
+    // ---- closure banner ---------------------------------------------------
+    // --- closure-span:begin (extracted by test_public_page_js.py) ---
+    // Month names come from a fixed array, not Intl's `month: "short"`. That
+    // formatter returns "Sept" for September on current ICU builds and "Sep"
+    // on older ones, so the banner's wording would otherwise depend on which
+    // browser the viewer happens to have.
+    const CLOSURE_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+    // Taipei wall-clock parts of an instant, whatever zone the viewer is in.
+    // hourCycle "h23" rather than hour12:false: the latter renders midnight as
+    // "24" under some locale/ICU combinations, which would defeat the
+    // whole-day test below.
+    function taipeiParts(date) {
+      const parts = {};
+      for (const { type, value } of new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Taipei", year: "numeric", month: "numeric",
+        day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+      }).formatToParts(date)) parts[type] = value;
+      return { day: Number(parts.day), month: Number(parts.month),
+               time: parts.hour + ":" + parts.minute };
+    }
+
+    function closureDay(parts) {
+      return parts.day + " " + CLOSURE_MONTHS[parts.month - 1];
+    }
+
+    // Ranges are half-open [from, to). Two shapes, and they must not share a
+    // formatter: a whole-day range ends on a local midnight, so the last day a
+    // viewer would call "closed" is the day before it -- but the monthly
+    // maintenance window ends at 17:00 the same day, and subtracting 24 hours
+    // from that renders "24 Aug – 23 Aug".
+    function closureSpan(fromIso, toIso) {
+      const from = new Date(fromIso), to = new Date(toIso);
+      const toParts = taipeiParts(to);
+      if (toParts.time !== "00:00") {
+        return closureDay(taipeiParts(from)) + " · until " + toParts.time;
+      }
+      const first = closureDay(taipeiParts(from));
+      const last = closureDay(taipeiParts(new Date(to.getTime() - 86400000)));
+      return first === last ? first : first + " – " + last;
+    }
+    // --- closure-span:end ---
+
+    // The payload is re-checked against the clock rather than trusted.
+    // applyLive() is also called with the localStorage payload at boot, and
+    // that can be days old -- a viewer returning on 21 September would
+    // otherwise see the renovation banner until the first network reply.
+    //
+    // `span` is computed once here so the banner and panel 4 print the same
+    // string instead of formatting the same dates twice.
+    function refilterClosures() {
+      const now = Date.now();
+      DATA.activeClosures = DATA.rawClosures
+        .filter((c) => new Date(c.from).getTime() <= now
+                    && now < new Date(c.to).getTime())
+        .map((c) => ({
+          venue: display(c.venue),
+          reason: c.reason,
+          source: c.source,
+          from: c.from,
+          to: c.to,
+          span: closureSpan(c.from, c.to),
+        }));
+      scheduleClosureExpiry();
+    }
+
+    // Polling would eventually notice a closure ending, but a tab left open
+    // across 2026-09-21 00:00 keeps the banner for up to a full cycle -- and
+    // indefinitely if the network is down, since a failed poll re-applies
+    // nothing. `to` is already in hand, so the removal is scheduled from the
+    // data rather than from the next successful request.
+    //
+    // Chained rather than one-shot: setTimeout saturates past ~24.8 days, so a
+    // closure ending five weeks out has to be re-armed rather than skipped.
+    // The callback re-checks the clock and reschedules if it fired early --
+    // timers are allowed to be a millisecond optimistic, and firing early
+    // without this would leave the banner up until the next poll after all.
+    //
+    // The reverse direction (a closure *starting*) cannot be scheduled: the
+    // API returns only what is active now, so that one waits for the poll.
+    const MAX_TIMEOUT_MS = 2147483647;
+    let closureTimer = null;
+    function scheduleClosureExpiry() {
+      if (closureTimer) { clearTimeout(closureTimer); closureTimer = null; }
+      const now = Date.now();
+      const next = DATA.activeClosures
+        .map((c) => new Date(c.to).getTime())
+        .filter((t) => t > now)
+        .sort((a, b) => a - b)[0];
+      if (next === undefined) return;
+      closureTimer = setTimeout(() => {
+        closureTimer = null;
+        if (Date.now() < next) { scheduleClosureExpiry(); return; }
+        refilterClosures();
+        renderAll();
+      }, Math.min(next - now, MAX_TIMEOUT_MS));
+    }
+
+    const closuresAnchor = document.getElementById("closures-anchor");
+
+    function renderClosures() {
+      // Remove the elements themselves rather than emptying a container: with
+      // nothing closed there is no banner node in the document at all.
+      for (const el of document.querySelectorAll(".closure")) el.remove();
+      for (const c of DATA.activeClosures) {
+        const div = document.createElement("div");
+        div.className = "closure";
+        const name = document.createElement("b");
+        name.textContent = c.venue;
+        div.appendChild(name);
+        div.appendChild(document.createTextNode(
+          " · " + c.reason + " · closed " + c.span + " "));
+        // createElement rather than innerHTML: reason and venue come out of the
+        // database, and interpolating viewer-visible strings into HTML is a
+        // habit not worth keeping even while we are the only ones writing them.
+        // Scheme-checked before it becomes an href. Only an owner credential
+        // can write this column today, so this is habit rather than a hole --
+        // the same habit as using createElement above instead of innerHTML.
+        if (c.source && /^https?:\/\//i.test(c.source)) {
+          const a = document.createElement("a");
+          a.href = c.source;
+          a.rel = "noopener";
+          a.textContent = "(notice)";
+          div.appendChild(a);
+        }
+        closuresAnchor.parentNode.insertBefore(div, closuresAnchor);
+      }
+    }
 
     // ---- status -----------------------------------------------------------
     const statusEl = document.getElementById("status");
@@ -412,8 +564,13 @@
     }
 
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") refresh();
-      else if (timer) { clearTimeout(timer); timer = null; }
+      if (document.visibilityState === "visible") {
+        // Cheap and synchronous, so a banner that expired while the tab was
+        // hidden is gone before the network round trip rather than after it.
+        refilterClosures();
+        renderClosures();
+        refresh();
+      } else if (timer) { clearTimeout(timer); timer = null; }
     });
 
     // ---- boot -------------------------------------------------------------

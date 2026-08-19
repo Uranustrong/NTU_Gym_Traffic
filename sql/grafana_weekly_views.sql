@@ -62,6 +62,30 @@ END $$;
 -- is not in git, not in the backup, and will be overwritten the next time
 -- apply_migrations.sh runs. Extending the renovation means editing this seed.
 INSERT INTO closures (venue, starts_at, ends_at, reason, source) VALUES
+    -- 2026-06-19, 端午節. Unlike every other row here this one has no notice
+    -- behind it -- the centre's news list starts at 2025-01-07 and carries
+    -- nothing about holiday closures -- so `source` is NULL rather than a link
+    -- to a government calendar, which would be a claim about public offices
+    -- and not about this building. What it rests on instead is the reading:
+    -- both venues reported 0 for all 192 open-hour samples, while
+    -- source_updated_at held 192 distinct values climbing to 21:55 and the
+    -- comfortable/capacity columns stayed populated. The page was live and
+    -- describing an empty building; a fetch failure looks nothing like that.
+    --
+    -- One day, not a holiday rule. Generalising from a single observation is
+    -- the mistake maintenance_venues below already refuses by naming its two
+    -- venues instead of matching every venue. The next public holiday inside
+    -- the collected range is 中秋節, 2026-09-25, and it will need its own row.
+    ('健身中心',
+     TIMESTAMPTZ '2026-06-19 00:00:00+08',
+     TIMESTAMPTZ '2026-06-20 00:00:00+08',
+     'Public holiday',
+     NULL),
+    ('室內游泳池',
+     TIMESTAMPTZ '2026-06-19 00:00:00+08',
+     TIMESTAMPTZ '2026-06-20 00:00:00+08',
+     'Public holiday',
+     NULL),
     ('健身中心',
      TIMESTAMPTZ '2026-08-17 00:00:00+08',
      -- The announcement says "until 20 September", so the half-open range ends

@@ -17,8 +17,11 @@
 -- beats forbidden, and it makes a future accidental GRANT harmless.
 --
 -- The wrappers are SECURITY DEFINER so anon needs no privilege on occupancy
--- and no RLS policy of its own; 004 stays exactly as it was, with anon and
--- authenticated holding nothing on the table or either view. The primitives
+-- and no RLS policy of its own; anon and authenticated hold nothing on the
+-- table or either view. (This file left 004 untouched. The closures work of
+-- 2026-08-19 did edit it -- new objects on its revoke list, and an RLS policy
+-- on `closures` for gym_reader -- so that claim no longer belongs here.) The
+-- primitives
 -- are deliberately INVOKER: called through a wrapper they run as its owner,
 -- and called directly by gym_reader from Grafana they run as gym_reader,
 -- which is what its RLS policy expects.
@@ -252,6 +255,30 @@ AS $$
                  EXTRACT(HOUR   FROM p_at AT TIME ZONE 'Asia/Taipei')::int AS hr) s;
 $$;
 
+-- Which closures cover a given instant. Parameterised rather than pinned to
+-- now() so the recurring fourth-Monday rule can be checked at a chosen moment
+-- -- without that, the only way to verify it is a parallel query against
+-- closure_periods, which still passes if gym_live accidentally reads the
+-- `closures` table directly and never surfaces the monthly maintenance day at
+-- all. Same shape as gym_is_open(p_at) above.
+--
+-- api_private, not public: PostgREST cannot see this schema, so it needs no
+-- REVOKE, no RLS decision and no anon-reachability check.
+CREATE OR REPLACE FUNCTION api_private.active_closure_rows(
+    p_at timestamptz DEFAULT now())
+RETURNS TABLE (venue text, starts_at timestamptz, ends_at timestamptz,
+               reason text, source text)
+LANGUAGE sql
+STABLE
+SET search_path = ''
+AS $$
+    SELECT c.venue, c.starts_at, c.ends_at, c.reason, c.source
+    FROM public.closure_periods c
+    WHERE c.starts_at <= p_at
+      AND p_at < c.ends_at
+    ORDER BY c.venue, c.starts_at;
+$$;
+
 -- ---------------------------------------------------------------------------
 -- Panel 1 -- Popular Times. Three primitives, not one.
 -- ---------------------------------------------------------------------------
@@ -304,7 +331,8 @@ AS $$
         SELECT EXTRACT(ISODOW FROM now() AT TIME ZONE 'Asia/Taipei')::int AS wd
     )
     SELECT count(DISTINCT (o.fetched_at AT TIME ZONE 'Asia/Taipei')::date)::int
-    FROM public.occupancy o, today
+    -- "based on N days" must not count a day the venue was shut.
+    FROM public.occupancy_excluding_closures o, today
     WHERE o.venue = p_venue
       AND EXTRACT(ISODOW FROM o.fetched_at AT TIME ZONE 'Asia/Taipei')::int = today.wd;
 $$;
@@ -692,6 +720,24 @@ BEGIN
             'dataAsOf', (SELECT max(o.fetched_at) FROM public.occupancy o),
             'servedAt', now(),
             'freshnessExpected', api_private.gym_is_open(),
+            -- Drives the page's banner and the closed state on the live cards.
+            -- It rides on gym_live rather than gym_heatmap because heatmap is
+            -- cached an hour server-side and six hours in the browser -- a
+            -- closure beginning or ending would take that long to show.
+            -- Roughly 150 bytes; egress is not the constraint here.
+            --
+            -- Through api_private.active_closure_rows() rather than an inline
+            -- subquery, and not through a view in `public`: the helper takes an
+            -- instant, so the acceptance check can ask it about a fourth Monday
+            -- and exercise this exact code path.
+            'activeClosures', coalesce((
+                SELECT jsonb_agg(jsonb_build_object(
+                           'venue',  c.venue,
+                           'from',   c.starts_at,
+                           'to',     c.ends_at,
+                           'reason', c.reason,
+                           'source', c.source))
+                FROM api_private.active_closure_rows() c), '[]'::jsonb),
             'panel1Now', coalesce((SELECT jsonb_object_agg(v.venue,
                               api_private.gym_panel1_series(v.venue, false, true))
                           FROM v), '{}'::jsonb),
@@ -738,6 +784,7 @@ DECLARE
     -- charging itself a rate limit, and the wrappers reach them as owner.
     internal_fns text[] := ARRAY[
         'api_private.rate_limit_check(text)',
+        'api_private.active_closure_rows(timestamptz)',
         'api_private.gym_heatmap_body()',
         'api_private.refresh_gym_heatmap_cache()'
     ];

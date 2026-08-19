@@ -50,6 +50,37 @@ def run_js(script):
                           capture_output=True, check=True).stdout
 
 
+def panel_option(panel_id, times, values, closures=None, extra="{}"):
+    """Run a whole getOption body, not just a fenced helper.
+
+    The fenced blocks cover the arithmetic; this covers the wiring around it --
+    which series option the result lands in, and whether some other key
+    (connectNulls, say) quietly undoes it.
+    """
+    body = json.loads(DASHBOARD.read_text(encoding="utf-8"))
+    js = next(p for p in body["panels"]
+              if p.get("id") == panel_id)["options"]["getOption"]
+    ctx = {
+        "panel": {"data": {"series": [{"fields": [
+            {"type": "time", "values": [None] * len(times)},
+            {"type": "number", "values": values},
+        ]}]}},
+    }
+    script = (
+        "const ctx = " + json.dumps(ctx) + ";\n"
+        "ctx.panel.data.series[0].fields[0].values = "
+        + json.dumps(times) + ".map((s) => Date.parse(s));\n"
+        + ("ctx.windowClosures = " + json.dumps(closures) + ";\n"
+           if closures is not None else "")
+        + "ctx.grafana = { replaceVariables: (s) => String(s) };\n"
+        "const opt = new Function('context', " + json.dumps(js) + ")(ctx);\n"
+        "process.stdout.write(JSON.stringify((" + extra + ").f "
+        "? (" + extra + ").f(opt) : opt, (k, v) => "
+        "typeof v === 'function' ? '[fn]' : v));"
+    )
+    return json.loads(run_js(script))
+
+
 @unittest.skipIf(NODE is None, "node not installed")
 class ClosureSpanTests(unittest.TestCase):
     def span(self, from_iso, to_iso):
@@ -214,6 +245,58 @@ class ClosureBandTests(unittest.TestCase):
                   + "\nprocess.stdout.write(JSON.stringify("
                     "closureBands([1, 2, 3], undefined)));")
         self.assertEqual(json.loads(run_js(script)), [])
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class ClosedReadingsAreBlankedTests(unittest.TestCase):
+    """During a closure the counter measures staff, not public occupancy.
+
+    The readings stay on the axis -- dropping them would collapse a 35-day
+    closure into one step -- but the line is not drawn through them. Plotting
+    0 was the alternative and is worse: 0 is a value that genuinely occurs,
+    both at opening time and all day on 2026-06-19.
+    """
+
+    TIMES = [f"2026-08-24T09:{m:02d}:00+08:00" for m in (0, 5, 10, 15, 20, 25)]
+    VALUES = [11, 12, 13, 14, 15, 16]
+
+    def values(self, closures=None):
+        return panel_option(3, self.TIMES, self.VALUES, closures,
+                            extra="{ f: (o) => o.series[0].data }")
+
+    def test_readings_inside_a_closure_are_not_drawn(self):
+        self.assertEqual(
+            self.values([{"venue": "健身中心",
+                          "from": "2026-08-24T09:07:00+08:00",
+                          "to": "2026-08-24T09:18:00+08:00",
+                          "reason": "Monthly maintenance"}]),
+            [11, 12, None, None, 15, 16])
+
+    def test_readings_outside_any_closure_are_untouched(self):
+        self.assertEqual(self.values([]), self.VALUES)
+
+    def test_the_grafana_path_draws_every_reading(self):
+        # No windowClosures in the context at all, which is what Grafana gives.
+        self.assertEqual(self.values(None), self.VALUES)
+
+    def test_the_line_is_not_reconnected_across_the_gap(self):
+        """connectNulls would silently undo the whole thing."""
+        series = panel_option(3, self.TIMES, self.VALUES, [],
+                              extra="{ f: (o) => o.series[0] }")
+        self.assertNotIn("connectNulls", series)
+
+    def test_a_blanked_slot_reads_closed_rather_than_null(self):
+        out = panel_option(
+            3, self.TIMES, self.VALUES, [],
+            extra="{ f: (o) => [o.tooltip.formatter("
+                  "[{axisValue: '2026-08-24 09:10', value: null}]),"
+                  " o.tooltip.formatter("
+                  "[{axisValue: '2026-08-24 09:10', value: 13}]),"
+                  " o.tooltip.formatter([])] }")
+        self.assertIn("closed", out[0])
+        self.assertNotIn("null", out[0])
+        self.assertIn("13 people", out[1])
+        self.assertEqual(out[2], "")
 
 
 if __name__ == "__main__":

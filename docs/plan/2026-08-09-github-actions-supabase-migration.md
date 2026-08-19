@@ -710,7 +710,9 @@ SELECT count(*) FROM (
 
 # Phase D — Follow-up（不在本次範圍）
 
-1. **第四個星期一過濾（只改 view 層）。** 技巧：任何星期幾的第 4 次出現必定落在該月 **22–28 日**，不需要 calendar table。在 [sql/grafana_weekly_views.sql](sql/grafana_weekly_views.sql) 的 `open_slots` CTE 加 `AND NOT (weekday_number = 1 AND EXTRACT(DAY FROM local_fetched_at)::int BETWEEN 22 AND 28 AND slot_start_time < TIME '17:00')`（需先把 `local_fetched_at` 從 `localized` 往下傳到 `slotted`），同條件同步到 [tools/render_public_html.py:185-187](tools/render_public_html.py#L185-L187)。`grafana/weekly-dashboard.json:150` 的 `OPEN_HOURS_MIN` **不用改**（heatmap 軸是「星期×時段」，本質表達不了「某月的第四個週一」）。`fetch_counts.py` 也不動。長久解是建 `closures(starts_at, ends_at, venue, reason)` table 用 anti-join，第四個週一當第一筆種子。
+1. ~~**第四個星期一過濾（只改 view 層）。**~~ **已完成 2026-08-19**，做法比原設計更進一步：直接建了本項最後提到的「長久解」`closures` 表，第四個星期一與健身中心 2026-08-17～09-20 的整修停開一起入座。設計見 [`docs/superpowers/specs/2026-08-19-closures-and-renovation-banner-design.md`](../superpowers/specs/2026-08-19-closures-and-renovation-banner-design.md)。與原始描述的三處差異：(a) 規則明列兩個場館而非套用到全部——公告只點名健身中心與溫水泳池；(b) 過濾點是**三處**而非兩處，原描述漏了 `api_private.gym_panel1_meta_rows`；(c) 沒有用 `open_slots` 的 22–28 日技巧，改用 `generate_series` 生成區間，因為同一套機制要同時表達一次性的整修。原始描述保留於下作為對照：
+
+   **第四個星期一過濾（只改 view 層）。** 技巧：任何星期幾的第 4 次出現必定落在該月 **22–28 日**，不需要 calendar table。在 [sql/grafana_weekly_views.sql](sql/grafana_weekly_views.sql) 的 `open_slots` CTE 加 `AND NOT (weekday_number = 1 AND EXTRACT(DAY FROM local_fetched_at)::int BETWEEN 22 AND 28 AND slot_start_time < TIME '17:00')`（需先把 `local_fetched_at` 從 `localized` 往下傳到 `slotted`），同條件同步到 [tools/render_public_html.py](tools/render_public_html.py)（行號錨點已移除：D4 把 SQL 從那個檔案搬走後就指不到東西了）。`grafana/weekly-dashboard.json:150` 的 `OPEN_HOURS_MIN` **不用改**（heatmap 軸是「星期×時段」，本質表達不了「某月的第四個週一」）。`fetch_counts.py` 也不動。長久解是建 `closures(starts_at, ends_at, venue, reason)` table 用 anti-join，第四個週一當第一筆種子。
 
 2. **`source_updated_at` 去重**（C2(d) 顯示有重複才做）：INSERT 加 anti-join guard + `CREATE INDEX ix_occupancy_venue_src ON occupancy (venue, source_updated_at)`。
 

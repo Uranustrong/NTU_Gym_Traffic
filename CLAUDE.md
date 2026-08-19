@@ -113,17 +113,19 @@ TEST_POSTGRES_URL=postgresql://songhejun@127.0.0.1:5433/gym_fetch \
 ALLOW_DESTRUCTIVE_DB_TESTS=1 python3 -m unittest discover -p 'test_*.py'
 ```
 
-Two of the five test files are **destructive integration tests**. `dbtest_support.py` gates them: it needs `TEST_POSTGRES_URL` *and* `ALLOW_DESTRUCTIVE_DB_TESTS=1`, refuses managed hosts (`*.supabase.co`, `*.rds.amazonaws.com`, …) unless `ALLOW_DESTRUCTIVE_DB_TESTS_ON_REMOTE=1` is also set, and suffixes every schema and role name per process so nothing can collide with a real object. They skip rather than fail when unarmed:
+Two of the six test files are **destructive integration tests**. `dbtest_support.py` gates them: it needs `TEST_POSTGRES_URL` *and* `ALLOW_DESTRUCTIVE_DB_TESTS=1`, refuses managed hosts (`*.supabase.co`, `*.rds.amazonaws.com`, …) unless `ALLOW_DESTRUCTIVE_DB_TESTS_ON_REMOTE=1` is also set, and suffixes every schema and role name per process so nothing can collide with a real object. They skip rather than fail when unarmed:
 
 - `test_sync_to_postgres_integration.py` — proves what mocks cannot: that PostgreSQL accepts the generated script, that the inline `COPY` payload survives psql's own line splitting, and that a failed verification rolls the **whole** transaction back. Works inside a throwaway schema selected via libpq's `options=-csearch_path=`.
 - `test_grafana_weekly_views.py` — builds a throwaway schema, applies `sql/grafana_weekly_views.sql`, asserts, drops it.
+
+`test_public_page_js.py` is the sixth and skips on a different axis: it runs the page's `closureSpan()` under `node` and skips when node is absent, rather than needing a database.
 
 ## Architecture notes that span multiple files
 
 **The public page's data comes from two functions, and `anon` can reach nothing else.** `sql/migrations/005_public_api.sql` defines two layers. `api_private.gym_panel*_rows()` are the canonical relational primitives — the single definition of each panel's SQL, which the Grafana dashboard's `rawSql` also selects from. `public.gym_heatmap()` and `public.gym_live()` are `SECURITY DEFINER` JSON wrappers that assemble Grafana's frame shape, and they are the only things PostgREST can see. Points that are easy to get wrong:
 
 - **`api_private` is not exposed by PostgREST**, so `anon` gets a 404 on the primitives rather than a 403 — invisible beats forbidden, and a future stray `GRANT` there would still be unreachable. Verified: `anon` and `authenticated` hold EXECUTE on the two wrappers and nothing else, and neither has `USAGE` on `api_private`.
-- **004 is untouched.** The wrappers run as their owner, so `anon` needs no privilege on `occupancy` and no RLS policy of its own.
+- **`anon` needs no privilege on `occupancy` and no RLS policy of its own**, because the wrappers run as their owner. 004 was untouched by 005 and stayed that way until the closures work of 2026-08-19, which added the new objects to its revoke list and gave `closures` an RLS policy for `gym_reader`.
 - **`gym_reader` needs EXECUTE on the primitives**, granted here rather than in 003, because Grafana's Supabase datasource connects as that role and its panels now call them.
 - **The browser sends `apikey` only, never `Authorization: Bearer`.** A `sb_publishable_...` key is not a JWT and is rejected as a malformed one; that header is for a signed-in user's token and there is no sign-in here.
 - **The two wrappers are unauthenticated compute, and the thing they can exhaust is quota, not secrecy.** The data is public by design. What is not free is the Free plan: 5 GB egress a month, 500 MB of database, and a *shared* CPU that collection also needs. Measured before any mitigation, one single-threaded `curl` loop sustained 1.9 GB/day against `gym_live` — the monthly egress in **2.6 days** — and at 510 ms of work per 700 ms round trip it alone occupied ~73% of a core while the collector's `COPY` (175 ms) competed for the rest. Egress exhaustion at least sends mail and a grace period; CPU starvation just silently drops readings, and a missed five-minute slot is gone for good.
@@ -182,6 +184,18 @@ One of the five failures was unrelated: `actions/checkout` failing TLS verificat
 Default conflict strategy is `DO NOTHING` (collection only appends). `--on-conflict update` switches to `DO UPDATE` for backfills and repairs, and needs an owner credential because `gym_writer` has no UPDATE privilege and RLS confines its inserts to roughly the last hour.
 
 **Opening-hours logic is duplicated in five places.** Python-side in `fetch_counts.py:is_open_time()` (Mon-Fri 06-22, Sat 09-22, Sun 09-18); SQL-side in `sql/grafana_weekly_views.sql` (the `open_slots` CTE, using ISODOW 1-7); JS-side in the heatmap panel of `grafana/weekly-dashboard.json` (panel id 2's `OPEN_HOURS_MIN` table, used to label cells outside hours as "closed"); and again in SQL in `api_private.gym_is_open()` (`sql/migrations/005_public_api.sql`), which both the panel-3 filter and the page's staleness signal share. Fifth, in UTC rather than Taipei, in the `pg_cron` schedules of `sql/supabase/001_dispatch_cron.sql`. All five must stay in sync. The SQL sides localize `fetched_at` via `AT TIME ZONE 'Asia/Taipei'` before bucketing.
+
+**休館與開館是兩件事。** 開館時間是每週固定的時段；休館是「這段期間這個場館關了」。後者住在 `closures` 表加兩個 view，定義在 `sql/grafana_weekly_views.sql`（= `002_views.sql`）的最前面。`closure_periods` 是唯一定義——表裡的一次性區間，聯集 `generate_series` 為**兩個具名場館**生成的每月第四個星期一 00:00–17:00。`occupancy_excluding_closures` 是歷史統計該讀的東西。第一筆種子是健身中心 2026-08-17～09-20 的整修停開（公告 `rent.pe.ntu.edu.tw/news/?K=157`）。
+
+- **規則明列場館，不用「NULL = 全館」。** 公告寫的是「健身中心及溫水泳池」，資料也證實兩館皆適用（2026-05-25 兩館都在 17:00 才跳起來：健身中心 0→121、室內游泳池 4→29，對照正常週一同時段 76 / 20）。萬用字元會讓未來新增的場館自動繼承一條從沒對它驗證過的規則。
+- **表為什麼在「views」檔案裡。** `weekly_occupancy_slots` 依賴它、而那個 view 是 002；獨立成 `001b_closures.sql` 會讓正確性依賴 shell glob 的 locale collation，而還原演練跑在 ubuntu/glibc、開發在 macOS。
+- **為什麼是 view 不是 `is_closed()` 函式。** SQL 函式 body 的未限定名稱是執行時依 caller 的 `search_path` 解析，而 `gym_heatmap()` 是 `SET search_path = ''` 的 SECURITY DEFINER——函式在那裡會找不到 `closures`。View 在建立時就把依賴釘成 OID。同理，這個檔案裡的所有名稱都不加 schema 限定，因為 `test_grafana_weekly_views.py` 會把整份檔案套進臨時 schema。
+- **seed 用 `ON CONFLICT DO UPDATE`**，和 005 的 `rate_limit_policy` 相反：限流值是可調參數，closure 是事實，git 該是唯一真相。代價是手動 `UPDATE` 的日期不進 git、不進備份、下次套 migration 會被蓋掉。**改 `ends_at` 或 `reason` 安全；改 `venue` 或 `starts_at` 會插入第二列並留下孤兒**，因為那兩欄就是 conflict key——seed 的註解裡寫了必要的 `DELETE`。`backup.yml` 只 dump `public.occupancy`，closures 靠版本控制還原。
+- **歷史統計有三處**，三處都要跟上：`weekly_occupancy_slots`、`current_vs_history` 的 join 側（`latest` 側刻意不濾，那是即時值，休館期間感測器讀到什麼就顯示什麼）、`api_private.gym_panel1_meta_rows`。即時的三個（`gym_panel3_rows`、`gym_panel1_now_rows`、`gym_panel4_rows`）一律照實。
+- **`gym_live` 回傳 `activeClosures`**，經由 `api_private.active_closure_rows(p_at)`。那個函式帶時刻參數不是為了通用，是為了可驗證：否則驗第四個星期一只能寫一個平行查詢，而那在 `gym_live` 查錯物件時照樣會過。它在 `api_private`，PostgREST 看不見，所以不需要 RLS 或 anon policy；EXECUTE 仍照 005 的慣例列進 `internal_fns` 一併 revoke（`gym_reader` 也不給——Grafana 不呼叫它）。closure 不走 `gym_heatmap`——那邊快取一小時加瀏覽器六小時，開始與結束會慢到沒有意義。
+- **live card 的休館狀態住在 `grafana/weekly-dashboard.json` 的 panel 4 JS**，因為公開頁面的面板程式碼就是 `extract_panel_js()` 從那裡抽出來的。它讀 `context.closures`——那是 `tools/public_template.html` 的 `makeContext()` 才有的欄位，Grafana 讀到 `undefined` 就走原路徑。**檔案會變，Grafana 畫面不會**（已實測）。
+- **日期字串由 `closureSpan()` 算一次**，包在 `closure-span:begin/end` 標記之間讓 `test_public_page_js.py` 抽出來用 node 測（沒有 node 就 skip）。兩個坑都踩過：整日區間與當日區間共用公式會把每月休館渲染成「24 Aug – 23 Aug」；用 `Intl` 的 `month: "short"` 則會在現行 ICU 上輸出 `Sept`、舊版輸出 `Sep`，**同一個頁面在不同瀏覽器顯示不同文字**。所以月份用固定陣列、時間用 `hourCycle: "h23"`。
+- **頁面會拿 `Date.now()` 重濾一次 payload**，因為 `applyLive()` 也會被 localStorage 的舊快取呼叫；並且對 `ends_at` 排精確的消失計時器（鏈式，因為 `setTimeout` 超過約 24.8 天會飽和）。反向做不到——API 只回傳當下生效的區間，所以 closure **開始**最多慢一個輪詢週期。
 
 **Weekday opening really is 06:00, not the 08:00 the website advertises.** `rent.pe.ntu.edu.tw` lists 08:00-22:00 for the 綜合體育館 *building*, but 健身中心 is populated from 06:00 on every weekday in the collected history (06:00 typically 6-17 people, 07:00 typically 19-34). Commit `28a4ae6` corrected this on purpose; "fixing" it back to 08:00 discards two hours of real data every weekday.
 

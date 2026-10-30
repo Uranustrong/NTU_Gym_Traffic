@@ -74,8 +74,8 @@ INSERT INTO closures (venue, starts_at, ends_at, reason, source) VALUES
     --
     -- One day, not a holiday rule. Generalising from a single observation is
     -- the mistake maintenance_venues below already refuses by naming its two
-    -- venues instead of matching every venue. The next public holiday inside
-    -- the collected range is 中秋節, 2026-09-25, and it will need its own row.
+    -- venues instead of matching every venue. Later holidays each get their
+    -- own rows below.
     ('健身中心',
      TIMESTAMPTZ '2026-06-19 00:00:00+08',
      TIMESTAMPTZ '2026-06-20 00:00:00+08',
@@ -88,11 +88,75 @@ INSERT INTO closures (venue, starts_at, ends_at, reason, source) VALUES
      NULL),
     ('健身中心',
      TIMESTAMPTZ '2026-08-17 00:00:00+08',
-     -- The announcement says "until 20 September", so the half-open range ends
-     -- when the 21st begins.
-     TIMESTAMPTZ '2026-09-21 00:00:00+08',
+     -- K=157 said "until 20 September"; K=160 (2026-09-19) then pushed the
+     -- reopening to Tuesday 29 September because the work was unfinished.
+     -- The readings agree: zero for every open hour through the 28th.
+     --
+     -- What they do NOT agree with is the next week. The counter kept reading
+     -- 0 until 2026-10-05 15:00, but K=162 (2026-10-02) says that was the
+     -- people-counting system failing while the gym was open. That is bad
+     -- data, not a closure, so it does not belong in this table.
+     TIMESTAMPTZ '2026-09-29 00:00:00+08',
      'Renovation',
-     'https://rent.pe.ntu.edu.tw/news/?K=157')
+     'https://rent.pe.ntu.edu.tw/news/?K=157'),
+    -- Holiday closures from the monthly 營業公告, whose body is a single image
+    -- (the notice text itself is empty). Both venues each time: the notices
+    -- close the whole building, and the readings are zero for both.
+    --
+    -- 健身中心's rows on 09-25 and 09-28 sit inside the renovation above. They
+    -- are recorded anyway, because they are facts about the building, and
+    -- closureBands() already folds a nested closure into the enclosing one.
+    ('健身中心',   TIMESTAMPTZ '2026-09-25 00:00:00+08', TIMESTAMPTZ '2026-09-26 00:00:00+08',
+     'Public holiday', 'https://rent.pe.ntu.edu.tw/news/?K=158'),
+    ('室內游泳池', TIMESTAMPTZ '2026-09-25 00:00:00+08', TIMESTAMPTZ '2026-09-26 00:00:00+08',
+     'Public holiday', 'https://rent.pe.ntu.edu.tw/news/?K=158'),
+    ('健身中心',   TIMESTAMPTZ '2026-09-28 00:00:00+08', TIMESTAMPTZ '2026-09-29 00:00:00+08',
+     'Public holiday', 'https://rent.pe.ntu.edu.tw/news/?K=158'),
+    ('室內游泳池', TIMESTAMPTZ '2026-09-28 00:00:00+08', TIMESTAMPTZ '2026-09-29 00:00:00+08',
+     'Public holiday', 'https://rent.pe.ntu.edu.tw/news/?K=158'),
+    ('健身中心',   TIMESTAMPTZ '2026-10-09 00:00:00+08', TIMESTAMPTZ '2026-10-11 00:00:00+08',
+     'Public holiday', 'https://rent.pe.ntu.edu.tw/news/?K=159'),
+    ('室內游泳池', TIMESTAMPTZ '2026-10-09 00:00:00+08', TIMESTAMPTZ '2026-10-11 00:00:00+08',
+     'Public holiday', 'https://rent.pe.ntu.edu.tw/news/?K=159'),
+    -- Typhoon days. Not in any notice: the October notice was published on
+    -- 09-14 and lists 10-24 as a normal opening day, and the centre never
+    -- posted a correction. Like 06-19, `source` is NULL and the row rests on
+    -- the readings (zero all day for both venues while source_updated_at
+    -- kept advancing) together with the user's own account of the closure.
+    ('健身中心',   TIMESTAMPTZ '2026-10-23 00:00:00+08', TIMESTAMPTZ '2026-10-25 00:00:00+08',
+     'Typhoon', NULL),
+    ('室內游泳池', TIMESTAMPTZ '2026-10-23 00:00:00+08', TIMESTAMPTZ '2026-10-25 00:00:00+08',
+     'Typhoon', NULL),
+    -- 10-26 is also the fourth Monday, whose generated closure ends at 17:00.
+    -- The holiday covers the whole day.
+    ('健身中心',   TIMESTAMPTZ '2026-10-25 00:00:00+08', TIMESTAMPTZ '2026-10-27 00:00:00+08',
+     'Public holiday', 'https://rent.pe.ntu.edu.tw/news/?K=159'),
+    ('室內游泳池', TIMESTAMPTZ '2026-10-25 00:00:00+08', TIMESTAMPTZ '2026-10-27 00:00:00+08',
+     'Public holiday', 'https://rent.pe.ntu.edu.tw/news/?K=159'),
+    -- The monthly maintenance closure moved a week early twice, because the
+    -- fourth Monday was a public holiday both times (09-28 Teachers' Day,
+    -- 10-26 Restoration Day). No notice says so; the readings do. On both
+    -- days both venues read 0-5 until 17:00 and then jumped (10-19: 健身中心
+    -- 0 -> 135, 室內游泳池 3 -> 53), the same shape as the 2026-05-25 fourth
+    -- Monday. 健身中心 on 09-21 is inside the renovation anyway, but is
+    -- recorded for the same reason as the holiday rows above.
+    --
+    -- One oddity is left unexplained: 健身中心 read 63-64 during 10:00-11:59
+    -- on 10-19 and 0 on either side. Most likely staff or a booked class; it
+    -- is inside the closure and filtered with the rest of the morning.
+    ('健身中心',   TIMESTAMPTZ '2026-09-21 00:00:00+08', TIMESTAMPTZ '2026-09-21 17:00:00+08',
+     'Monthly maintenance', NULL),
+    ('室內游泳池', TIMESTAMPTZ '2026-09-21 00:00:00+08', TIMESTAMPTZ '2026-09-21 17:00:00+08',
+     'Monthly maintenance', NULL),
+    ('健身中心',   TIMESTAMPTZ '2026-10-19 00:00:00+08', TIMESTAMPTZ '2026-10-19 17:00:00+08',
+     'Monthly maintenance', NULL),
+    ('室內游泳池', TIMESTAMPTZ '2026-10-19 00:00:00+08', TIMESTAMPTZ '2026-10-19 17:00:00+08',
+     'Monthly maintenance', NULL),
+    -- Announced ahead of time, so the live card shows it on the day.
+    ('健身中心',   TIMESTAMPTZ '2026-11-28 00:00:00+08', TIMESTAMPTZ '2026-11-29 00:00:00+08',
+     'Election day', 'https://rent.pe.ntu.edu.tw/news/?K=164'),
+    ('室內游泳池', TIMESTAMPTZ '2026-11-28 00:00:00+08', TIMESTAMPTZ '2026-11-29 00:00:00+08',
+     'Election day', 'https://rent.pe.ntu.edu.tw/news/?K=164')
 ON CONFLICT (venue, starts_at) DO UPDATE
     SET ends_at = EXCLUDED.ends_at,
         reason  = EXCLUDED.reason,

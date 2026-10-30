@@ -136,8 +136,15 @@ own weekday+hour expectation, and seeded by hand in
 
 **Status:** deliberately reactive. One observation is not a rule — the same
 reasoning that makes `maintenance_venues` name its two venues instead of
-matching every venue. **中秋節 2026-09-25 is a Friday** and will understate
-Fridays the same way until someone runs the scan again and adds a row.
+matching every venue. The scan was re-run on 2026-10-30 and caught up through
+October. The monthly 營業公告 (`/news/?K=…`) lists holiday closures ahead of
+time, but only inside an image attachment, so reading it is a manual step. The
+next known closure is 11-28 (election day), which is already seeded.
+
+**A fourth Monday that is a holiday moves maintenance a week early.** It
+happened on 09-21 and 10-19, and neither move was announced. The generated rule
+cannot express it, so both are seeded rows. Check for this whenever a holiday
+lands on a fourth Monday.
 
 **The scan, so it does not have to be reinvented:** score every (venue, day)
 as `sum(actual) / sum(expected)` where expected is the mean for that

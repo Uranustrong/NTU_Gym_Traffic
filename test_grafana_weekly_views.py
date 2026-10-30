@@ -276,18 +276,23 @@ class GrafanaWeeklyViewsTests(unittest.TestCase):
         self.assertEqual(output, "1|0")
 
     def test_the_renovation_seed_is_present_and_half_open(self):
-        """The seeded range covers 20 September and stops before the 21st."""
+        """The range covers 28 September and stops before the 29th.
+
+        K=157 said 20 September; K=160 moved the reopening to the 29th.
+        Filtered by reason because the 28th is also Teachers' Day, which has
+        its own row.
+        """
         output = self.run_fixture_query(
             """
             SELECT
                 (SELECT count(*) FROM closure_periods
-                 WHERE venue = '健身中心'
-                   AND starts_at <= TIMESTAMPTZ '2026-09-20T23:59:00+08'
-                   AND TIMESTAMPTZ '2026-09-20T23:59:00+08' < ends_at),
+                 WHERE venue = '健身中心' AND reason = 'Renovation'
+                   AND starts_at <= TIMESTAMPTZ '2026-09-28T23:59:00+08'
+                   AND TIMESTAMPTZ '2026-09-28T23:59:00+08' < ends_at),
                 (SELECT count(*) FROM closure_periods
-                 WHERE venue = '健身中心'
-                   AND starts_at <= TIMESTAMPTZ '2026-09-21T00:00:00+08'
-                   AND TIMESTAMPTZ '2026-09-21T00:00:00+08' < ends_at);
+                 WHERE venue = '健身中心' AND reason = 'Renovation'
+                   AND starts_at <= TIMESTAMPTZ '2026-09-29T00:00:00+08'
+                   AND TIMESTAMPTZ '2026-09-29T00:00:00+08' < ends_at);
             """
         )
 

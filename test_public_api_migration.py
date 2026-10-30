@@ -98,8 +98,12 @@ class PublicApiMigrationTests(unittest.TestCase):
 
     def test_the_public_holiday_seed_survives_a_reapply(self):
         self.assertEqual(
+            # Pinned to one date, so seeding more holidays does not read as a
+            # duplicate. The point is that a re-apply leaves exactly the two
+            # rows 06-19 was seeded with.
             self.sql("SELECT count(*) FROM public.closures "
-                     "WHERE reason = 'Public holiday';"), "2")
+                     "WHERE reason = 'Public holiday' "
+                     "AND starts_at = TIMESTAMPTZ '2026-06-19 00:00:00+08';"), "2")
 
     def test_window_closure_rows_uses_overlap_not_containment(self):
         """The boundary matrix. Both edges are exclusive.

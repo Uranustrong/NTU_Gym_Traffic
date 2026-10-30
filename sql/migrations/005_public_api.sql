@@ -114,7 +114,17 @@ CREATE TABLE IF NOT EXISTS api_private.rate_limit_policy (
 -- that already exists, so hand-tuning survives re-running this migration.
 INSERT INTO api_private.rate_limit_policy (bucket, per_client, window_secs, per_client_day, daily_global)
 VALUES ('gym_live',    60, 60, 3000, 8000),
-       ('gym_heatmap', 30, 60, 1500, 4000)
+       ('gym_heatmap', 30, 60, 1500, 4000),
+       -- Browsing past weeks is a click, not a poll. 60 a minute rather than
+       -- something click-sized like 20, because holding the back arrow
+       -- through all of history (about 24 weeks by late 2026) is ordinary
+       -- use and must not hit a 429 halfway. The page caches every week it
+       -- has fetched, so the minute limit only ever meets first visits.
+       -- What bounds cost is the daily figure. One call is one venue-week,
+       -- about 5 KB gzipped, so 3000 a day is ~15 MB, or roughly 0.45 GB a
+       -- month at worst. That is on top of gym_live's budget, not carved out
+       -- of it.
+       ('gym_week',    60, 60,  400, 3000)
 ON CONFLICT (bucket) DO NOTHING;
 
 -- UNLOGGED on purpose, both of them: this is counters, not records. It keeps
@@ -816,6 +826,66 @@ BEGIN
     );
 END $$;
 
+-- One calendar week of panel 3 for one venue, for the page's prev / next
+-- arrows. It is separate from gym_live on purpose: gym_live is polled every
+-- five minutes, and any history added to it would be re-sent on every poll.
+-- This one is called once per click. The page keeps past weeks in memory,
+-- because they no longer change.
+--
+-- Weeks are Monday to Sunday in Taipei, and p_week_start is snapped back to
+-- its Monday. That lets a caller pass any date in the week, so the page never
+-- has to agree with the database about which day a week starts on. The
+-- current week is cut at now(), and a future week comes back empty rather
+-- than as an error.
+--
+-- firstReadingAt lets the page stop the back arrow at the start of
+-- collection. It is a MAX/MIN on the leading column of
+-- ux_occupancy_fetched_at_venue, so it costs an index probe. Gaps inside the
+-- range, such as the ws7 loss from 2026-06-22 to 08-07, are not reported
+-- here. They show up as an empty panel3, which the page labels "no
+-- readings".
+CREATE OR REPLACE FUNCTION public.gym_week(p_venue text, p_week_start date)
+RETURNS jsonb
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    wk     date;
+    t_from timestamptz;
+    t_to   timestamptz;
+BEGIN
+    PERFORM api_private.rate_limit_check('gym_week');
+
+    wk := coalesce(p_week_start, (now() AT TIME ZONE 'Asia/Taipei')::date);
+    wk := wk - (EXTRACT(ISODOW FROM wk)::int - 1);
+    t_from := wk::timestamp AT TIME ZONE 'Asia/Taipei';
+    t_to   := greatest(t_from, least(now(), (wk + 7)::timestamp AT TIME ZONE 'Asia/Taipei'));
+
+    RETURN jsonb_build_object(
+        'venue',          p_venue,
+        'weekStart',      wk,
+        'from',           t_from,
+        'to',             t_to,
+        'firstReadingAt', (SELECT min(o.fetched_at) FROM public.occupancy o),
+        'panel3',         api_private.gym_panel3_series(p_venue, t_from, t_to),
+        -- Same element shape and ordering as gym_live's windowClosures, so the
+        -- panel's closureBands() takes either without knowing which it got.
+        -- Filtered to the venue here because the page only ever asks for one.
+        'windowClosures', coalesce((
+            SELECT jsonb_agg(jsonb_build_object(
+                       'venue',  c.venue,
+                       'from',   c.starts_at,
+                       'to',     c.ends_at,
+                       'reason', c.reason,
+                       'source', c.source)
+                   ORDER BY c.starts_at, c.venue)
+            FROM api_private.window_closure_rows(t_from, t_to) c
+            WHERE c.venue = p_venue), '[]'::jsonb)
+    );
+END $$;
+
 -- ---------------------------------------------------------------------------
 -- Privileges
 -- ---------------------------------------------------------------------------
@@ -867,7 +937,8 @@ DECLARE
     ];
     public_fns text[] := ARRAY[
         'public.gym_heatmap()',
-        'public.gym_live(integer)'
+        'public.gym_live(integer)',
+        'public.gym_week(text,date)'
     ];
 BEGIN
     FOREACH fn IN ARRAY internal_tables LOOP
@@ -888,7 +959,7 @@ BEGIN
         END LOOP;
     END LOOP;
 
-    -- The browser gets exactly two entry points and nothing else.
+    -- The browser gets exactly these entry points and nothing else.
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
         FOREACH fn IN ARRAY public_fns LOOP
             EXECUTE format('GRANT EXECUTE ON FUNCTION %s TO anon', fn);

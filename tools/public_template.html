@@ -36,7 +36,31 @@
     #panel1 { height: 280px; }
     #panel4 { height: 240px; }
     #panel2 { height: 580px; }
-    #panel3 { height: 320px; }
+    #panel3 { height: 320px; margin-top: 0; }
+    /* Week navigation sits on the panel's top edge and reads as part of it. */
+    .weeknav {
+      display: flex; align-items: center; gap: 8px; margin: 14px 0 0;
+      padding: 6px 8px; background: #11151c; border: 1px solid #20242c;
+      border-bottom: none; border-radius: 6px 6px 0 0; font-size: 12px; color: #9aa;
+    }
+    .weeknav + .p3wrap .panel { border-radius: 0 0 6px 6px; }
+    .weeknav button {
+      background: #1b1f27; color: #d4d4d4; border: 1px solid #333;
+      border-radius: 4px; padding: 3px 9px; font-size: 12px; cursor: pointer;
+    }
+    .weeknav button:disabled { opacity: 0.35; cursor: default; }
+    .weeknav #wk-label { min-width: 9em; text-align: center; color: #ccc; }
+    .weeknav #wk-note { color: #c9736b; }
+    .p3wrap { position: relative; }
+    /* Laid over the empty chart rather than replacing it, so the panel keeps
+       its height and the page does not jump when a week has no readings. */
+    .p3empty {
+      position: absolute; inset: 0; display: flex; align-items: center;
+      justify-content: center; color: #777; font-size: 13px; pointer-events: none;
+    }
+    /* display:flex above outranks the user-agent [hidden] rule, so without
+       this the message showed over every week, full ones included. */
+    .p3empty[hidden] { display: none; }
     footer { padding: 8px 24px 28px; color: #666; font-size: 11px; text-align: center; }
     footer a { color: #888; text-decoration: none; }
     .err { color: #c08; font-size: 12px; padding: 12px; }
@@ -95,7 +119,17 @@
     <div id="panel1" class="panel"></div>
     <div id="panel4" class="panel"></div>
     <div id="panel2" class="panel"></div>
-    <div id="panel3" class="panel"></div>
+    <div class="weeknav">
+      <button id="wk-prev" type="button" aria-label="Previous week">&#9664;</button>
+      <span id="wk-label">Last 7 days</span>
+      <button id="wk-next" type="button" aria-label="Next week">&#9654;</button>
+      <button id="wk-live" type="button" hidden>Latest</button>
+      <span id="wk-note"></span>
+    </div>
+    <div class="p3wrap">
+      <div id="panel3" class="panel"></div>
+      <div id="panel3-empty" class="p3empty" hidden>No readings this week</div>
+    </div>
   </main>
   <footer>
     Data source <a href="https://rent.pe.ntu.edu.tw/">rent.pe.ntu.edu.tw</a>
@@ -189,7 +223,11 @@
                     // Kept across venue switches on purpose: it names a stretch of
                     // time, and comparing two venues over the same stretch is the
                     // point of switching.
-                    panel3Zoom: null };
+                    panel3Zoom: null,
+                    // Panel 3's week: null is the live trailing window from
+                    // gym_live, otherwise the Monday ("YYYY-MM-DD", Taipei) of
+                    // a calendar week fetched through gym_week.
+                    week: null };
 
     function applyHeatmap(p) {
       DATA.venues = p.venues || [];
@@ -258,8 +296,9 @@
         // Panel 3 only ever draws one venue, and the panel cannot do the
         // filtering itself: replaceVariables hands it the English display
         // name, never the Chinese key the API returns.
-        windowClosures: DATA.windowClosures.filter(
-          (c) => c.venue === state.venue),
+        windowClosures: state.week
+          ? ((weekCache.get(weekKey(state.venue, state.week)) || {}).windowClosures || [])
+          : DATA.windowClosures.filter((c) => c.venue === state.venue),
         // Panel 3 only. Grafana has no such field, so it opens unzoomed.
         zoom: state.panel3Zoom,
         grafana: {
@@ -358,7 +397,11 @@
       if (!state.venue) return null;
       if (panelKey === "panel1") return panel1For(state.venue);
       if (panelKey === "panel2") return (DATA.panel2[state.venue] || {})[state.granularity];
-      if (panelKey === "panel3") return DATA.panel3[state.venue];
+      if (panelKey === "panel3") {
+        if (!state.week) return DATA.panel3[state.venue];
+        const w = weekCache.get(weekKey(state.venue, state.week));
+        return w ? w.panel3 : null;
+      }
       if (panelKey === "panel4") return DATA.panel4;
       return null;
     }
@@ -374,6 +417,16 @@
         return;
       }
       chart.setOption(option || {}, true);
+      if (panelKey === "panel3") {
+        // Only a browsed week can be legitimately empty: the ws7 loss left
+        // 2026-06-22 to 08-07 with nothing in it. An empty live window is a
+        // collection problem, and the status line already says so.
+        // Only when the week has actually arrived and is empty -- not while
+        // a venue switch is still fetching it.
+        const s = seriesFor("panel3");
+        const n = s && s.fields && s.fields[0] ? s.fields[0].values.length : -1;
+        document.getElementById("panel3-empty").hidden = !(state.week && n === 0);
+      }
     }
 
     function renderAll() {
@@ -402,7 +455,8 @@
     venueSel.addEventListener("change", () => {
       state.venue = venueSel.value;
       // panel4 shows both venues, so it does not depend on venue.
-      renderPanel("panel1"); renderPanel("panel2"); renderPanel("panel3");
+      renderPanel("panel1"); renderPanel("panel2");
+      if (state.week) showWeek(state.week); else renderPanel("panel3");
     });
     document.getElementById("sel-palette").addEventListener("change", (e) => {
       state.palette = e.target.value; renderAll();
@@ -460,6 +514,121 @@
       return first === last ? first : first + " – " + last;
     }
     // --- closure-span:end ---
+
+    // ---- week navigation --------------------------------------------------
+    // --- week-math:begin (extracted by test_public_page_js.py) ---
+    // Calendar weeks, Monday to Sunday, in Taipei. Taipei has no DST, so a
+    // fixed +8h shift is exact and avoids Intl entirely. Dates travel as
+    // "YYYY-MM-DD" strings, which is also what gym_week accepts.
+    const TAIPEI_MS = 8 * 3600 * 1000;
+    const DAY_MS = 86400000;
+
+    function isoDay(utcMs) {
+      return new Date(utcMs).toISOString().slice(0, 10);
+    }
+
+    function taipeiMonday(ms) {
+      const d = new Date(ms + TAIPEI_MS);
+      const sinceMonday = (d.getUTCDay() + 6) % 7;
+      return isoDay(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - sinceMonday));
+    }
+
+    function addWeeks(mondayIso, n) {
+      return isoDay(Date.parse(mondayIso + "T00:00:00Z") + n * 7 * DAY_MS);
+    }
+
+    // "11 – 17 May", or "27 Apr – 3 May" when the week crosses a month.
+    function weekLabel(mondayIso) {
+      const a = new Date(Date.parse(mondayIso + "T00:00:00Z"));
+      const b = new Date(a.getTime() + 6 * DAY_MS);
+      const m = (d) => CLOSURE_MONTHS[d.getUTCMonth()];
+      return a.getUTCMonth() === b.getUTCMonth()
+        ? a.getUTCDate() + " – " + b.getUTCDate() + " " + m(b)
+        : a.getUTCDate() + " " + m(a) + " – " + b.getUTCDate() + " " + m(b);
+    }
+    // --- week-math:end ---
+
+    // Every browsable week is a finished one -- the arrows never land on the
+    // week in progress, which the live window already covers -- so each is
+    // fetched once per page load and kept. In memory only: localStorage would
+    // outlive a corrected closure seed.
+    const weekCache = new Map();
+    const weekKey = (venue, monday) => venue + "|" + monday;
+    let firstReadingAt = null;   // from gym_week; bounds the back arrow
+    let weekToken = 0;           // only the newest click's reply is applied
+
+    const wkPrev = document.getElementById("wk-prev");
+    const wkNext = document.getElementById("wk-next");
+    const wkLive = document.getElementById("wk-live");
+    const wkLabel = document.getElementById("wk-label");
+    const wkNote = document.getElementById("wk-note");
+
+    function syncWeekNav(busy) {
+      const firstMonday = firstReadingAt ? taipeiMonday(Date.parse(firstReadingAt)) : null;
+      wkLabel.textContent = state.week ? weekLabel(state.week) : "Last 7 days";
+      wkPrev.disabled = !!busy || !!(state.week && firstMonday && state.week <= firstMonday);
+      wkNext.disabled = !!busy || !state.week;
+      wkLive.hidden = !state.week;
+    }
+
+    async function showWeek(monday) {
+      const token = ++weekToken;
+      const key = weekKey(state.venue, monday);
+      wkNote.textContent = "";
+      if (!weekCache.has(key)) {
+        syncWeekNav(true);
+        wkLabel.textContent = weekLabel(monday) + " …";
+        try {
+          const w = await rpc("gym_week", { p_venue: state.venue, p_week_start: monday });
+          translateField(w.panel3, "metric");
+          firstReadingAt = w.firstReadingAt || firstReadingAt;
+          weekCache.set(key, w);
+        } catch (err) {
+          if (token !== weekToken) return;
+          console.error("gym_week failed:", err);
+          wkNote.textContent = "Could not load that week (" + err.message.replace(/^gym_week: /, "") + ")";
+          // Stay on the week being shown if it is still drawable. A venue
+          // switch is the case where it is not: the old venue's week is
+          // cached but the new one's is not, so fall back to live rather
+          // than leave an empty chart.
+          if (state.week && !weekCache.has(weekKey(state.venue, state.week))) {
+            state.week = null;
+            state.panel3Zoom = null;
+            renderPanel("panel3");
+          }
+          syncWeekNav(false);
+          return;
+        }
+        if (token !== weekToken) return;
+      }
+      if (state.week !== monday) state.panel3Zoom = null;
+      state.week = monday;
+      syncWeekNav(false);
+      renderPanel("panel3");
+    }
+
+    function showLive() {
+      ++weekToken;
+      state.week = null;
+      state.panel3Zoom = null;
+      wkNote.textContent = "";
+      syncWeekNav(false);
+      renderPanel("panel3");
+    }
+
+    wkPrev.addEventListener("click", () => {
+      // From the live window, one step back is the last *complete* week: the
+      // current one is what the live window is already showing.
+      const thisMonday = taipeiMonday(Date.now());
+      showWeek(state.week ? addWeeks(state.week, -1) : addWeeks(thisMonday, -1));
+    });
+    wkNext.addEventListener("click", () => {
+      if (!state.week) return;
+      const next = addWeeks(state.week, 1);
+      if (next >= taipeiMonday(Date.now())) showLive(); else showWeek(next);
+    });
+    wkLive.addEventListener("click", showLive);
+    syncWeekNav(false);
 
     // The payload is re-checked against the clock rather than trusted.
     // applyLive() is also called with the localStorage payload at boot, and

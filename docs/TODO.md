@@ -6,33 +6,6 @@ ships.
 
 ---
 
-## Panel week navigation — prev / next week arrows
-
-**Idea:** ◀ / ▶ arrows beside a panel to step through one week at a time,
-instead of a single fixed window.
-
-**Status:** deferred. Collection started 2026-05-14, so the span is now wide
-enough to navigate — but it is not contiguous: 2026-06-22 → 08-07 is gone with
-ws7, and the recovered week is only partially detailed. Arrows that step into
-an empty week need to say "no data", not render blank axes.
-
-**Constraints / notes:**
-- **The "every option must be baked in" constraint is gone.** The page used to
-  ship all its data inside the HTML, so week navigation would have meant baking
-  every week. It now calls `public.gym_live()` on Supabase from the browser, so
-  arrows can simply ask for the week they need. What is left is the arrow
-  controls plus either an extra argument on `gym_live` or a small sibling RPC
-  in `sql/migrations/005_public_api.sql`.
-- Grafana already does prev / next week for the **line chart** (`Selected
-  Venue Exact Counts`) through its native time-range picker.
-- The **heatmap** is the exception — its SQL has no time filter, so it is
-  always an all-weeks average; week navigation there is new work even in
-  Grafana.
-- Decide first: which panel (heatmap vs line chart), and public page vs
-  Grafana-only.
-
----
-
 ## Line chart — honest data-gap handling
 
 **Idea:** `Selected Venue Exact Counts` uses an ordinal category x-axis, so a

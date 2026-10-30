@@ -235,5 +235,61 @@ class PublicApiMigrationTests(unittest.TestCase):
         self.assertEqual(reasons, ["Outer", "Inner"])
 
 
+    WEEK_FIXTURE = """
+        INSERT INTO public.occupancy
+            (fetched_at, source_updated_at, venue, current_count,
+             comfortable_count, capacity_count)
+        VALUES
+            -- Sunday before the week: out.
+            (TIMESTAMPTZ '2026-05-10 17:00+08', NULL, 'WEEK', 1, 80, 161),
+            -- Monday 06:00, the first open slot: in.
+            (TIMESTAMPTZ '2026-05-11 06:00+08', NULL, 'WEEK', 2, 80, 161),
+            -- Sunday 17:55, the last open slot: in.
+            (TIMESTAMPTZ '2026-05-17 17:55+08', NULL, 'WEEK', 3, 80, 161),
+            -- The next Monday's first slot: out.
+            (TIMESTAMPTZ '2026-05-18 06:00+08', NULL, 'WEEK', 4, 80, 161)
+        ON CONFLICT DO NOTHING;
+        INSERT INTO public.closures (venue, starts_at, ends_at, reason, source)
+        VALUES ('WEEK',  TIMESTAMPTZ '2026-05-13 00:00+08',
+                         TIMESTAMPTZ '2026-05-14 00:00+08', 'Mine', NULL),
+               ('OTHER', TIMESTAMPTZ '2026-05-13 00:00+08',
+                         TIMESTAMPTZ '2026-05-14 00:00+08', 'Theirs', NULL)
+        ON CONFLICT DO NOTHING;
+    """
+
+    def week(self, day):
+        return json.loads(self.sql(self.WEEK_FIXTURE
+                                   + f"SELECT public.gym_week('WEEK', DATE '{day}')::text;"))
+
+    @staticmethod
+    def field(series, name):
+        return next(f["values"] for f in series["fields"] if f["name"] == name)
+
+    def test_gym_week_snaps_any_day_to_its_monday(self):
+        """A Thursday and a Sunday name the same week as its Monday."""
+        starts = {self.week(d)["weekStart"]
+                  for d in ("2026-05-11", "2026-05-14", "2026-05-17")}
+        self.assertEqual(starts, {"2026-05-11"})
+
+    def test_gym_week_is_monday_to_sunday_inclusive_of_both_ends(self):
+        values = self.field(self.week("2026-05-14")["panel3"], "value")
+        self.assertEqual(values, [2, 3])
+
+    def test_gym_week_closures_are_this_venues_only(self):
+        reasons = [c["reason"] for c in self.week("2026-05-14")["windowClosures"]]
+        self.assertEqual(reasons, ["Mine"])
+
+    def test_gym_week_in_the_future_is_empty_not_an_error(self):
+        payload = json.loads(self.sql(
+            "SELECT public.gym_week('WEEK', (now() + INTERVAL '30 days')::date)::text;"))
+        self.assertEqual(self.field(payload["panel3"], "value"), [])
+        self.assertEqual(payload["from"], payload["to"])
+
+    def test_gym_week_reports_where_collection_starts(self):
+        payload = self.week("2026-05-14")
+        first = self.sql("SELECT to_json(min(fetched_at))#>>'{}' FROM public.occupancy;")
+        self.assertEqual(payload["firstReadingAt"], first)
+
+
 if __name__ == "__main__":
     unittest.main()

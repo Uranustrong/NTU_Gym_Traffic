@@ -421,3 +421,52 @@ class ZoomTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class WeekMathTests(unittest.TestCase):
+    """Calendar weeks for panel 3's arrows, Monday to Sunday, in Taipei.
+
+    The trap is the timezone. A viewer abroad at Sunday 23:30 Taipei, which
+    is still Sunday afternoon in Europe, and one at Monday 00:30 Taipei,
+    which is Sunday evening UTC, must land in different weeks. A version
+    built on the browser's local date gets one of them wrong.
+    """
+
+    def call(self, expr):
+        script = (extract_block("closure-span") + extract_block("week-math")
+                  + "\nprocess.stdout.write(JSON.stringify(" + expr + "));")
+        return json.loads(run_js(script))
+
+    def monday(self, iso_instant):
+        return self.call(f"taipeiMonday(Date.parse({json.dumps(iso_instant)}))")
+
+    def test_sunday_late_evening_in_taipei_is_still_that_week(self):
+        self.assertEqual(self.monday("2026-11-01T23:30:00+08:00"), "2026-10-26")
+
+    def test_monday_just_after_midnight_in_taipei_starts_the_next_week(self):
+        # 2026-11-01T16:30Z: still Sunday in UTC and in every European zone.
+        self.assertEqual(self.monday("2026-11-02T00:30:00+08:00"), "2026-11-02")
+
+    def test_it_ignores_the_host_timezone(self):
+        script = (extract_block("closure-span") + extract_block("week-math")
+                  + "\nprocess.stdout.write(taipeiMonday("
+                    "Date.parse('2026-11-02T00:30:00+08:00')));")
+        for tz in ("UTC", "America/Los_Angeles", "Asia/Tokyo"):
+            out = subprocess.run([NODE, "-e", script], text=True, capture_output=True,
+                                 check=True, env={"TZ": tz, "PATH": "/usr/bin:/bin"}).stdout
+            self.assertEqual(out, "2026-11-02", tz)
+
+    def test_stepping_weeks_crosses_months_and_years(self):
+        self.assertEqual(self.call("addWeeks('2026-12-28', 1)"), "2027-01-04")
+        self.assertEqual(self.call("addWeeks('2026-05-11', -2)"), "2026-04-27")
+
+    def test_a_week_inside_one_month_names_it_once(self):
+        self.assertEqual(self.call("weekLabel('2026-05-11')"), "11 – 17 May")
+
+    def test_a_week_across_months_names_both(self):
+        self.assertEqual(self.call("weekLabel('2026-04-27')"), "27 Apr – 3 May")
+
+    def test_september_reads_the_same_as_in_the_closure_banner(self):
+        self.assertEqual(self.call("weekLabel('2026-09-28')"), "28 Sep – 4 Oct")
+

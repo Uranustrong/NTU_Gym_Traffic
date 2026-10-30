@@ -59,7 +59,7 @@ revoke all on schema ops from public;
 select vault.create_secret(
            :'gh_dispatch_token',
            'github_dispatch_token',
-           'Fine-grained PAT, Actions:read+write on Uranustrong/NTU_Gym_Traffic. Read by ops.dispatch_workflow(). Expires 2026-11-07.')
+           'Fine-grained PAT, Actions:read+write on Uranustrong/NTU_Gym_Traffic. Read by ops.dispatch_workflow(). Expires 2027-03-21.')
  where not exists (select 1 from vault.secrets where name = 'github_dispatch_token');
 
 select vault.update_secret(id, :'gh_dispatch_token')

@@ -184,7 +184,12 @@
                    rawClosures: [], activeClosures: [], windowClosures: [] };
     let lastGood = { dataAsOf: null, servedAt: null, freshnessExpected: null, fromCache: false };
 
-    const state = { venue: null, palette: "slate", granularity: "60min", metric: "avg_count" };
+    const state = { venue: null, palette: "slate", granularity: "60min", metric: "avg_count",
+                    // Panel 3's zoom, as category labels; null is the whole window.
+                    // Kept across venue switches on purpose: it names a stretch of
+                    // time, and comparing two venues over the same stretch is the
+                    // point of switching.
+                    panel3Zoom: null };
 
     function applyHeatmap(p) {
       DATA.venues = p.venues || [];
@@ -255,6 +260,8 @@
         // name, never the Chinese key the API returns.
         windowClosures: DATA.windowClosures.filter(
           (c) => c.venue === state.venue),
+        // Panel 3 only. Grafana has no such field, so it opens unzoomed.
+        zoom: state.panel3Zoom,
         grafana: {
           replaceVariables: (s) => String(s)
             .split("${palette}").join(state.palette)
@@ -277,6 +284,75 @@
     for (const key of Object.keys(PANEL_IDS)) {
       charts[key] = echarts.init(document.getElementById(key));
     }
+
+    // --- zoom-state:begin (extracted by test_public_page_js.py) ---
+    // The inverse of panel 3's zoomWindow(): turn the slider's indices back
+    // into category labels, which survive the next refresh's shifted axis.
+    // The whole axis is stored as null, and a right edge on the newest
+    // reading as `to: null`, so a viewer who is not looking at the past
+    // keeps seeing new readings arrive.
+    function zoomState(cats, startValue, endValue) {
+      const last = cats.length - 1;
+      if (last < 0) return null;
+      const s = Math.max(0, Math.min(last, startValue));
+      const e = Math.max(0, Math.min(last, endValue));
+      if (s === 0 && e === last) return null;
+      return { from: cats[s], to: e === last ? null : cats[e] };
+    }
+    // --- zoom-state:end ---
+
+    // --- wheel-zoom:begin (extracted by test_public_page_js.py) ---
+    // Ctrl+wheel zoom around the reading under the pointer. A trackpad pinch
+    // arrives as a wheel event with ctrlKey set, so it is covered too. In
+    // index space: the anchor keeps its position on screen, the span scales by
+    // exp(deltaY / 400), is clamped to [minSpan, last], and is shifted back
+    // inside the axis rather than cut, so zooming near an edge does not shrink
+    // the view on one side only. A mouse notch is deltaY ~120, so one notch
+    // narrows the view to ~74%. At /100 four notches went from seven days to
+    // the one-hour minimum. A pinch sends many small deltas and stays smooth.
+    function wheelZoom(startValue, endValue, anchor, deltaY, last, minSpan) {
+      const span = endValue - startValue;
+      if (last <= 0 || span <= 0) return { startValue: 0, endValue: Math.max(last, 0) };
+      const f = Math.max(0, Math.min(1, (anchor - startValue) / span));
+      const next = Math.max(Math.min(minSpan, last),
+                            Math.min(last, span * Math.exp(deltaY / 400)));
+      let s = anchor - next * f;
+      s = Math.max(0, Math.min(last - next, s));
+      return { startValue: Math.round(s), endValue: Math.round(s + next) };
+    }
+    // --- wheel-zoom:end ---
+
+    // Panel 3 carries no 'inside' dataZoom because that component swallows
+    // every wheel event over the chart (see the panel's comment), so the page
+    // does it here. Only a Ctrl-held wheel is cancelled. Anything else
+    // scrolls the page as if the chart were not there.
+    document.getElementById("panel3").addEventListener("wheel", (e) => {
+      if (!e.ctrlKey) return;
+      const chart = charts.panel3;
+      const opt = chart.getOption();
+      const dz = (opt.dataZoom || [])[0];
+      const cats = ((opt.xAxis || [])[0] || {}).data || [];
+      if (!dz || cats.length < 2) return;
+      e.preventDefault();
+      const rect = chart.getDom().getBoundingClientRect();
+      const px = chart.convertFromPixel({ xAxisIndex: 0 },
+                                        [e.clientX - rect.left, e.clientY - rect.top]);
+      const anchor = Array.isArray(px) ? px[0] : px;
+      const next = wheelZoom(dz.startValue, dz.endValue,
+                             Number.isFinite(anchor) ? anchor : (dz.startValue + dz.endValue) / 2,
+                             e.deltaY, cats.length - 1, dz.minValueSpan || 12);
+      chart.dispatchAction({ type: "dataZoom", dataZoomIndex: 0, ...next });
+    }, { passive: false });
+
+    // Fired by the viewer's gestures only. setOption does not emit it, so a
+    // refresh re-applying the saved zoom cannot loop back here.
+    charts.panel3.on("datazoom", () => {
+      const opt = charts.panel3.getOption();
+      const dz = (opt.dataZoom || [])[0];
+      const cats = ((opt.xAxis || [])[0] || {}).data || [];
+      if (!dz) return;
+      state.panel3Zoom = zoomState(cats, dz.startValue, dz.endValue);
+    });
 
     function seriesFor(panelKey) {
       if (!state.venue) return null;

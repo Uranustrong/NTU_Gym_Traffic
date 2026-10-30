@@ -50,7 +50,7 @@ def run_js(script):
                           capture_output=True, check=True).stdout
 
 
-def panel_option(panel_id, times, values, closures=None, extra="{}"):
+def panel_option(panel_id, times, values, closures=None, extra="{}", zoom=None):
     """Run a whole getOption body, not just a fenced helper.
 
     The fenced blocks cover the arithmetic; this covers the wiring around it --
@@ -72,6 +72,7 @@ def panel_option(panel_id, times, values, closures=None, extra="{}"):
         + json.dumps(times) + ".map((s) => Date.parse(s));\n"
         + ("ctx.windowClosures = " + json.dumps(closures) + ";\n"
            if closures is not None else "")
+        + ("ctx.zoom = " + json.dumps(zoom) + ";\n" if zoom is not None else "")
         + "ctx.grafana = { replaceVariables: (s) => String(s) };\n"
         "const opt = new Function('context', " + json.dumps(js) + ")(ctx);\n"
         "process.stdout.write(JSON.stringify((" + extra + ").f "
@@ -297,6 +298,125 @@ class ClosedReadingsAreBlankedTests(unittest.TestCase):
         self.assertNotIn("null", out[0])
         self.assertIn("13 people", out[1])
         self.assertEqual(out[2], "")
+
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class ZoomTests(unittest.TestCase):
+    """Panel 3's zoom survives the five-minute refresh.
+
+    The axis shifts by one reading every refresh, so the zoom is stored as
+    labels and resolved again each render: zoomState() in the page turns the
+    slider's indices into labels, and zoomWindow() in the panel turns them
+    back into indices. An implementation that stored indices would pass a
+    single-render test and drift one slot per refresh in the browser.
+    """
+
+    # Labels as the panel builds them: "YYYY-MM-DD HH:MM", Taipei time.
+    CATS = ["2026-10-29 21:50", "2026-10-29 21:55",
+            "2026-10-30 06:00", "2026-10-30 06:05", "2026-10-30 06:10"]
+
+    def window(self, cats, zoom):
+        script = (extract_panel_block(3, "zoom-window")
+                  + "\nprocess.stdout.write(JSON.stringify(zoomWindow("
+                  + json.dumps(cats) + ", " + json.dumps(zoom) + ")));")
+        return json.loads(run_js(script))
+
+    def state(self, cats, start, end):
+        script = (extract_block("zoom-state")
+                  + "\nprocess.stdout.write(JSON.stringify(zoomState("
+                  + json.dumps(cats) + f", {start}, {end})));")
+        return json.loads(run_js(script))
+
+    def test_no_saved_zoom_shows_everything(self):
+        self.assertEqual(self.window(self.CATS, None),
+                         {"startValue": 0, "endValue": 4})
+
+    def test_the_whole_axis_is_stored_as_no_zoom(self):
+        self.assertIsNone(self.state(self.CATS, 0, 4))
+
+    def test_a_right_edge_on_the_newest_reading_follows_new_data(self):
+        saved = self.state(self.CATS, 1, 4)
+        self.assertEqual(saved, {"from": "2026-10-29 21:55", "to": None})
+        # Next refresh: the oldest reading fell off, a newer one arrived.
+        later = self.CATS[1:] + ["2026-10-30 06:15"]
+        self.assertEqual(self.window(later, saved),
+                         {"startValue": 0, "endValue": 4})
+
+    def test_a_zoom_into_the_past_stays_on_the_same_readings(self):
+        saved = self.state(self.CATS, 1, 2)
+        later = self.CATS[1:] + ["2026-10-30 06:15"]
+        got = self.window(later, saved)
+        self.assertEqual([later[got["startValue"]], later[got["endValue"]]],
+                         ["2026-10-29 21:55", "2026-10-30 06:00"])
+
+    def test_a_bound_between_readings_snaps_inward(self):
+        # 22:30 is closed hours, so no reading carries that label.
+        self.assertEqual(
+            self.window(self.CATS, {"from": "2026-10-29 21:52",
+                                    "to": "2026-10-30 06:07"}),
+            {"startValue": 1, "endValue": 3})
+
+    def test_a_range_that_has_rolled_out_of_the_window_shows_everything(self):
+        self.assertEqual(
+            self.window(self.CATS, {"from": "2026-10-20 09:00",
+                                    "to": "2026-10-20 10:00"}),
+            {"startValue": 0, "endValue": 4})
+
+    def test_an_empty_axis_does_not_throw(self):
+        self.assertEqual(self.window([], {"from": "x", "to": None}),
+                         {"startValue": 0, "endValue": 0})
+        self.assertIsNone(self.state([], 0, 0))
+
+    def test_the_saved_zoom_reaches_the_slider(self):
+        times = ["2026-10-30T06:00:00+08:00", "2026-10-30T06:05:00+08:00",
+                 "2026-10-30T06:10:00+08:00", "2026-10-30T06:15:00+08:00"]
+        zooms = panel_option(
+            3, times, [1, 2, 3, 4], [],
+            zoom={"from": "2026-10-30 06:05", "to": "2026-10-30 06:10"},
+            extra="{ f: (o) => o.dataZoom.map((z) => [z.type, z.startValue, z.endValue]) }")
+        self.assertEqual(zooms, [["slider", 1, 2]])
+
+    def test_there_is_no_inside_zoom_to_trap_the_page_scroll(self):
+        """ECharts 5.4 cancels every wheel event over a chart with one.
+
+        Measured in a browser: with an 'inside' dataZoom the page would not
+        scroll past the chart, even with zoomOnMouseWheel 'ctrl' and both wheel
+        options off. Without it, the same wheel scrolled 150px. Ctrl+wheel
+        lives in the page instead.
+        """
+        types = panel_option(
+            3, ["2026-10-30T06:00:00+08:00"], [1], [],
+            extra="{ f: (o) => o.dataZoom.map((z) => z.type) }")
+        self.assertNotIn("inside", types)
+
+    def wheel(self, start, end, anchor, delta, last=100, min_span=12):
+        script = (extract_block("wheel-zoom")
+                  + "\nprocess.stdout.write(JSON.stringify(wheelZoom("
+                  + f"{start}, {end}, {anchor}, {delta}, {last}, {min_span})));")
+        return json.loads(run_js(script))
+
+    def test_zooming_in_keeps_the_reading_under_the_pointer_in_place(self):
+        # Anchor at 25% of a 0..80 view; a negative delta narrows the span.
+        got = self.wheel(0, 80, 20, -100)
+        self.assertLess(got["endValue"] - got["startValue"], 80)
+        frac = (20 - got["startValue"]) / (got["endValue"] - got["startValue"])
+        self.assertAlmostEqual(frac, 0.25, delta=0.03)
+
+    def test_zooming_out_stops_at_the_whole_axis(self):
+        self.assertEqual(self.wheel(40, 60, 50, 10000),
+                         {"startValue": 0, "endValue": 100})
+
+    def test_zooming_in_stops_at_the_minimum_span(self):
+        got = self.wheel(40, 60, 50, -10000)
+        self.assertEqual(got["endValue"] - got["startValue"], 12)
+
+    def test_zooming_near_an_edge_shifts_rather_than_cuts(self):
+        # Anchored on the last reading, zooming out cannot push past 100, so
+        # the extra span has to come from the left.
+        got = self.wheel(80, 100, 100, 50)
+        self.assertEqual(got["endValue"], 100)
+        self.assertGreater(100 - got["startValue"], 20)
 
 
 if __name__ == "__main__":

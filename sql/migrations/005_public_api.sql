@@ -356,8 +356,10 @@ AS $$
         SELECT EXTRACT(ISODOW FROM now() AT TIME ZONE 'Asia/Taipei')::int AS wd
     )
     SELECT count(DISTINCT (o.fetched_at AT TIME ZONE 'Asia/Taipei')::date)::int
-    -- "based on N days" must not count a day the venue was shut.
-    FROM public.occupancy_excluding_closures o, today
+    -- "based on N days" must count exactly the days the typical bars were
+    -- averaged over, so it reads the same view: no shut days, no broken
+    -- counter, last eight weeks.
+    FROM public.history_readings o, today
     WHERE o.venue = p_venue
       AND EXTRACT(ISODOW FROM o.fetched_at AT TIME ZONE 'Asia/Taipei')::int = today.wd;
 $$;

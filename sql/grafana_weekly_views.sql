@@ -173,6 +173,61 @@ ON CONFLICT (venue, starts_at) DO UPDATE
 -- Changing only ends_at or reason is safe -- that is the common case (a
 -- renovation slipping) and what DO UPDATE is here for.
 
+----------------------------------------------------------------------------
+-- Data outages -- when the venue was open but its counter was wrong
+----------------------------------------------------------------------------
+-- A sibling of closures, deliberately not a row in it. closures feeds the
+-- public page's "closed" banner and the shaded bands on panel 3. Putting an
+-- outage there would label an open gym as closed, which is the same "shut"
+-- versus "nobody measured" confusion the closures layer exists to prevent.
+-- What the two have in common is only that history must not average over
+-- them, and history_readings below is where that is decided.
+--
+-- Same shape, same seed policy (DO UPDATE: these are facts, git holds them),
+-- same protections at creation, and for the same reasons.
+CREATE TABLE IF NOT EXISTS data_outages (
+    venue     TEXT        NOT NULL,
+    starts_at TIMESTAMPTZ NOT NULL,
+    -- Half-open [starts_at, ends_at), as in closures.
+    ends_at   TIMESTAMPTZ NOT NULL,
+    reason    TEXT        NOT NULL,
+    source    TEXT,
+    PRIMARY KEY (venue, starts_at),
+    CONSTRAINT data_outages_range_ok CHECK (ends_at > starts_at)
+);
+
+ALTER TABLE data_outages ENABLE ROW LEVEL SECURITY;
+
+DO $$
+DECLARE
+    role_name text;
+BEGIN
+    FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
+            EXECUTE format('REVOKE ALL ON data_outages FROM %I', role_name);
+        END IF;
+    END LOOP;
+END $$;
+
+INSERT INTO data_outages (venue, starts_at, ends_at, reason, source) VALUES
+    -- The gym reopened after the renovation on 09-29. The counter then read 0
+    -- for every open hour until 2026-10-05 15:32, and K=162 (10-02) confirms
+    -- the people-counting system had failed. It resumed at about a fifth of
+    -- a normal Monday: 16:00 peaked at 21 and 18:00 at 31, where a normal
+    -- Monday reads around 135. That is consistent with a counter restarted
+    -- from zero while people were already inside. So the rest of 10-05 is
+    -- excluded as well, and the outage ends at midnight. 10-06 scores
+    -- normally.
+    ('健身中心',
+     TIMESTAMPTZ '2026-09-29 00:00:00+08',
+     TIMESTAMPTZ '2026-10-06 00:00:00+08',
+     'People counter failure',
+     'https://rent.pe.ntu.edu.tw/news/?K=162')
+ON CONFLICT (venue, starts_at) DO UPDATE
+    SET ends_at = EXCLUDED.ends_at,
+        reason  = EXCLUDED.reason,
+        source  = EXCLUDED.source;
+
 -- The single definition of "was this venue closed at this instant". Two
 -- consumers read it with different shapes -- occupancy_excluding_closures asks
 -- per reading timestamp, api_private.active_closure_rows() asks about an
@@ -224,7 +279,9 @@ SELECT mv.venue,
 FROM fourth_mondays fm
 CROSS JOIN maintenance_venues mv;
 
--- What every historical claim should read instead of `occupancy`.
+-- Every reading taken while the venue was open. Statistics read
+-- history_readings below, which builds on this; this view is the right one
+-- whenever the question is "was it open" rather than "what is typical".
 --
 -- `o.*` rather than a column list: CREATE OR REPLACE VIEW can append columns,
 -- so re-running this file after occupancy gains one keeps the view in step
@@ -241,8 +298,44 @@ WHERE NOT EXISTS (
       AND o.fetched_at <  c.ends_at
 );
 
+-- What every historical *statistic* reads: the readings that are trustworthy
+-- (not shut, counter not broken) and recent (the last eight weeks).
+--
+-- Why a window at all: an all-time mean averaged the summer break into the
+-- semester. On 2026-10-30, 健身中心's weekday 16:00 mean was 70. October
+-- after the counter recovered averaged 107; June and August averaged 62 and
+-- 57. A window turns over on its own when the term changes. A term calendar
+-- would also do that, but it would be another hand-maintained list of dates.
+-- Eight weeks gives roughly forty readings per weekday half-hour slot.
+--
+-- Anchored to the newest reading, not now(), for two reasons. If collection
+-- stops, history should not drain away beneath the page week by week. And
+-- the integration tests build fixed-date fixtures, which a now()-relative
+-- window would push out of range one day at a time. MAX(fetched_at) is served
+-- by ux_occupancy_fetched_at_venue, whose leading column is fetched_at.
+--
+-- Two windowing cases to know about:
+--   * A venue shut for most of the window has few samples left, and a venue
+--     shut for longer than the window has none. Its slots then drop out of
+--     the heatmap. That is accurate, because no recent history exists.
+--   * The window counts calendar weeks, not open weeks. The 2026 renovation
+--     plus the counter outage took 健身中心 out for seven weeks, so on
+--     2026-10-30 it has about four weeks of history and the pool has eight.
+CREATE OR REPLACE VIEW history_readings
+WITH (security_invoker = true) AS
+SELECT o.*
+FROM occupancy_excluding_closures o
+WHERE o.fetched_at > (SELECT MAX(fetched_at) FROM occupancy) - INTERVAL '8 weeks'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM data_outages d
+    WHERE d.venue = o.venue
+      AND o.fetched_at >= d.starts_at
+      AND o.fetched_at <  d.ends_at
+);
+
 -- Same reasoning as the table above. occupancy_excluding_closures matters most
--- of the three: as an owner-rights view it would read straight past
+-- of these: as an owner-rights view it would read straight past
 -- occupancy's RLS, which is exactly the bypass 004's header warns about.
 -- security_invoker on the CREATE closes that; this closes the reachability.
 DO $$
@@ -250,7 +343,8 @@ DECLARE
     obj text;
     role_name text;
 BEGIN
-    FOREACH obj IN ARRAY ARRAY['closure_periods', 'occupancy_excluding_closures'] LOOP
+    FOREACH obj IN ARRAY ARRAY['closure_periods', 'occupancy_excluding_closures',
+                               'history_readings'] LOOP
         FOREACH role_name IN ARRAY ARRAY['anon', 'authenticated'] LOOP
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
                 EXECUTE format('REVOKE ALL ON %I FROM %I', obj, role_name);
@@ -275,7 +369,7 @@ WITH localized AS (
                 THEN current_count::numeric / capacity_count
             ELSE NULL
         END AS crowding_ratio
-    FROM occupancy_excluding_closures
+    FROM history_readings
 ),
 slotted AS (
     SELECT
@@ -376,8 +470,8 @@ history AS (
     FROM latest_slotted l
     -- The `latest` CTE above deliberately still reads `occupancy`: it is the
     -- live number, and the card must show what the sensor says even while the
-    -- venue is shut. Only the thing it is compared against excludes closures.
-    JOIN occupancy_excluding_closures h
+    -- venue is shut. Only the thing it is compared against is filtered.
+    JOIN history_readings h
         ON h.venue = l.venue
        AND h.fetched_at <> l.latest_fetched_at
        AND EXTRACT(ISODOW FROM h.fetched_at AT TIME ZONE 'Asia/Taipei')::integer = l.weekday_number

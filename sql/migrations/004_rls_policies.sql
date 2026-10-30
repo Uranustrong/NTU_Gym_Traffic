@@ -17,6 +17,7 @@ ALTER VIEW public.weekly_occupancy_slots       SET (security_invoker = true);
 ALTER VIEW public.current_vs_history           SET (security_invoker = true);
 ALTER VIEW public.closure_periods              SET (security_invoker = true);
 ALTER VIEW public.occupancy_excluding_closures SET (security_invoker = true);
+ALTER VIEW public.history_readings             SET (security_invoker = true);
 
 ALTER TABLE public.occupancy ENABLE ROW LEVEL SECURITY;
 
@@ -25,6 +26,7 @@ ALTER TABLE public.occupancy ENABLE ROW LEVEL SECURITY;
 -- endpoint that never passes through api_private.rate_limit_check(). The two
 -- SECURITY DEFINER wrappers are the only way in, and they are metered.
 ALTER TABLE public.closures ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.data_outages ENABLE ROW LEVEL SECURITY;
 
 -- anon/authenticated only exist on Supabase; skip cleanly on local Postgres.
 DO $$
@@ -39,7 +41,9 @@ BEGIN
                 'public.current_vs_history, '
                 'public.closures, '
                 'public.closure_periods, '
-                'public.occupancy_excluding_closures FROM %I', role_name);
+                'public.occupancy_excluding_closures, '
+                'public.data_outages, '
+                'public.history_readings FROM %I', role_name);
             EXECUTE format(
                 'REVOKE ALL ON SEQUENCE public.occupancy_id_seq FROM %I',
                 role_name);
@@ -72,4 +76,10 @@ DROP POLICY IF EXISTS gym_reader_closures_select ON public.closures;
 -- gym_reader reaches closures only through the security_invoker views, but RLS
 -- does not care how it got there.
 CREATE POLICY gym_reader_closures_select ON public.closures
+    FOR SELECT TO gym_reader USING (true);
+
+DROP POLICY IF EXISTS gym_reader_data_outages_select ON public.data_outages;
+
+-- Same as closures: history_readings reads it under the caller's rights.
+CREATE POLICY gym_reader_data_outages_select ON public.data_outages
     FOR SELECT TO gym_reader USING (true);

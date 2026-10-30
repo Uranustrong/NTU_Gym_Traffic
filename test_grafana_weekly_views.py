@@ -299,5 +299,86 @@ class GrafanaWeeklyViewsTests(unittest.TestCase):
         self.assertEqual(output, "1|0")
 
 
+    def test_an_outage_leaves_history_but_is_not_a_closure(self):
+        """A broken counter drops out of statistics without being called shut.
+
+        The same-instant pair at 05-19 09:00 again: the outage names 健身中心,
+        so 室內游泳池 must survive in history_readings. occupancy_excluding_closures
+        must keep both, because the venue was open. Folding outages into
+        closures would make that column read 1 and the page would say closed.
+        """
+        output = self.run_fixture_query(
+            """
+            INSERT INTO data_outages (venue, starts_at, ends_at, reason)
+            VALUES ('健身中心',
+                    TIMESTAMPTZ '2026-05-19T00:00:00+08:00',
+                    TIMESTAMPTZ '2026-05-20T00:00:00+08:00',
+                    'Test outage');
+
+            SELECT
+                (SELECT string_agg(venue, ',' ORDER BY venue) FROM history_readings
+                 WHERE fetched_at = TIMESTAMPTZ '2026-05-19T09:00:00+08:00'),
+                (SELECT count(*) FROM occupancy_excluding_closures
+                 WHERE fetched_at = TIMESTAMPTZ '2026-05-19T09:00:00+08:00');
+            """
+        )
+
+        self.assertEqual(output, "室內游泳池|2")
+
+    def test_an_outage_moves_the_comparison_median(self):
+        """current_vs_history reads history_readings, not the closure-only view.
+
+        Same arithmetic as the closure version above: dropping 05-19's 62 moves
+        the median from 40 to 30. Pointing the join back at
+        occupancy_excluding_closures would return 999|40.00|3.
+        """
+        output = self.run_fixture_query(
+            """
+            INSERT INTO data_outages (venue, starts_at, ends_at, reason)
+            VALUES ('健身中心',
+                    TIMESTAMPTZ '2026-05-19T00:00:00+08:00',
+                    TIMESTAMPTZ '2026-05-20T00:00:00+08:00',
+                    'Test outage');
+
+            SELECT current_count, historical_median_current_count, sample_count
+            FROM current_vs_history
+            WHERE venue = '健身中心';
+            """
+        )
+
+        self.assertEqual(output, "999|30.00|2")
+
+    def test_history_is_the_eight_weeks_before_the_newest_reading(self):
+        """The window is (newest - 8 weeks, newest], anchored to data, not now().
+
+        The newest reading is 06-23 09:00, so 04-28 09:00 is exactly eight
+        weeks back and falls outside, while 09:05 falls inside. 04-20 is a
+        Monday in the 08:00 slot -- not 04-27, which is the fourth Monday and
+        would be filtered for the wrong reason. If it leaked in,
+        健身中心|1|08:00 would stop reading 15.00 over two samples. Both rows are still in
+        occupancy_excluding_closures, because the window only applies to
+        statistics.
+        """
+        output = self.run_fixture_query(
+            """
+            INSERT INTO occupancy (fetched_at, venue, current_count, comfortable_count, capacity_count)
+            VALUES (TIMESTAMPTZ '2026-04-20T08:05:00+08:00', '健身中心', 1000, 40, 80),
+                   (TIMESTAMPTZ '2026-04-28T09:00:00+08:00', '健身中心', 1001, 40, 80),
+                   (TIMESTAMPTZ '2026-04-28T09:05:00+08:00', '健身中心', 1002, 40, 80);
+
+            SELECT
+                (SELECT string_agg(current_count::text, ',' ORDER BY fetched_at)
+                 FROM history_readings WHERE fetched_at < TIMESTAMPTZ '2026-05-01T00:00:00+08:00'),
+                (SELECT avg_current_count || '/' || sample_count FROM weekly_occupancy_slots
+                 WHERE venue = '健身中心' AND weekday_number = 1 AND slot_label = '08:00'),
+                (SELECT count(*) FROM occupancy_excluding_closures
+                 WHERE fetched_at < TIMESTAMPTZ '2026-05-01T00:00:00+08:00');
+            """
+        )
+
+        self.assertEqual(output, "1002|15.00/2|3")
+
+
+
 if __name__ == "__main__":
     unittest.main()

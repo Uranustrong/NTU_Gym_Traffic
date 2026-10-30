@@ -61,6 +61,8 @@ GRANT SELECT ON public.current_vs_history TO gym_reader;
 GRANT SELECT ON public.closures TO gym_reader;
 GRANT SELECT ON public.closure_periods TO gym_reader;
 GRANT SELECT ON public.occupancy_excluding_closures TO gym_reader;
+GRANT SELECT ON public.data_outages TO gym_reader;
+GRANT SELECT ON public.history_readings TO gym_reader;
 
 -- Needed by the backup, not by any query: pg_dump --data-only reads
 -- occupancy_id_seq to record last_value, so a restore resumes the sequence

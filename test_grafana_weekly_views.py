@@ -379,6 +379,31 @@ class GrafanaWeeklyViewsTests(unittest.TestCase):
         self.assertEqual(output, "1002|15.00/2|3")
 
 
+    def test_weeks_observed_counts_days_not_readings(self):
+        """The tooltip's confidence figure is distinct weeks, not readings.
+
+        Tuesday 09:00 has four readings on four dates (05-05, 05-12, 05-19,
+        06-23): four weeks. The extra 05-19 09:10 reading lands in the same
+        slot on a date already counted, so readings become 5 while weeks
+        stay 4. Monday 08:00 has 05-04 and 05-11. 05-25 08:45 sits in the
+        08:30 slot and inside the maintenance window anyway, so the answer is
+        2 weeks.
+        """
+        output = self.run_fixture_query(
+            """
+            INSERT INTO occupancy (fetched_at, venue, current_count, comfortable_count, capacity_count)
+            VALUES (TIMESTAMPTZ '2026-05-19T09:10:00+08:00', '健身中心', 50, 40, 80);
+
+            SELECT weekday_number || ' ' || slot_label || ' ' || sample_count || '/' || weeks_observed
+            FROM weekly_occupancy_slots
+            WHERE venue = '健身中心'
+              AND (weekday_number, slot_label) IN ((1, '08:00'), (2, '09:00'))
+            ORDER BY weekday_number;
+            """
+        )
+
+        self.assertEqual(output.splitlines(), ["1 08:00 2/2", "2 09:00 5/4"])
+
 
 if __name__ == "__main__":
     unittest.main()

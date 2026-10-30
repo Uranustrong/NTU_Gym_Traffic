@@ -33,22 +33,6 @@ an empty week need to say "no data", not render blank axes.
 
 ---
 
-## Tooltip — show weeks of data, not just a reading count
-
-**Idea:** the heatmap and Popular Times tooltips show `sample_count`, a count
-of 5-minute readings (now labelled `based on N readings`). A more meaningful
-confidence signal is the number of distinct weeks behind each cell's average.
-
-**Status:** deferred. The misleading `N wk` label was already fixed →
-`based on N readings`. Showing the true week count is the larger follow-up.
-
-**Notes:** add a `weeks_observed` column to `weekly_occupancy_slots` in
-`sql/grafana_weekly_views.sql` (count of distinct ISO weeks), re-apply the view
-to Postgres, surface it through the panel SQL and tooltips. Update
-`test_grafana_weekly_views.py` if it asserts the view's column set.
-
----
-
 ## Line chart — honest data-gap handling
 
 **Idea:** `Selected Venue Exact Counts` uses an ordinal category x-axis, so a

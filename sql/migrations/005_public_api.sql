@@ -313,8 +313,14 @@ $$;
 -- heatmap-sized aggregate would run on every poll. Separate functions make
 -- that structural instead of hopeful.
 
-CREATE OR REPLACE FUNCTION api_private.gym_panel1_typical_rows(p_venue text)
-RETURNS TABLE (hour integer, typical_count integer, samples bigint)
+-- DROP first: `weeks` was added to the result columns, and CREATE OR REPLACE
+-- cannot change a function's return type. This is safe to run every time.
+-- Callers are SQL-language functions without BEGIN ATOMIC, so nothing holds a
+-- pg_depend on this function, and the privileges block at the bottom grants
+-- EXECUTE again. Same for gym_panel2_rows below.
+DROP FUNCTION IF EXISTS api_private.gym_panel1_typical_rows(text);
+CREATE FUNCTION api_private.gym_panel1_typical_rows(p_venue text)
+RETURNS TABLE (hour integer, typical_count integer, samples bigint, weeks bigint)
 LANGUAGE sql
 STABLE
 SET search_path = ''
@@ -324,7 +330,12 @@ AS $$
     )
     SELECT EXTRACT(HOUR FROM w.slot_start_time)::int,
            ROUND(AVG(w.avg_current_count))::int,
-           SUM(w.sample_count)
+           SUM(w.sample_count),
+           -- MAX, not SUM: the hour's two half-hour slots mostly share their
+           -- days. MAX is a lower bound on the true union and differs only when
+           -- a day contributed to just one half, such as a closure ending at
+           -- :30. Erring low is the honest direction for a confidence figure.
+           MAX(w.weeks_observed)
     FROM public.weekly_occupancy_slots w, today
     WHERE w.venue = p_venue
       AND w.weekday_number = today.wd
@@ -367,9 +378,11 @@ $$;
 -- ---------------------------------------------------------------------------
 -- Panel 2 -- Weekly heatmap
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION api_private.gym_panel2_rows(p_venue text, p_gran text)
+DROP FUNCTION IF EXISTS api_private.gym_panel2_rows(text, text);
+CREATE FUNCTION api_private.gym_panel2_rows(p_venue text, p_gran text)
 RETURNS TABLE (weekday_number integer, slot_label text, slot_start_time time,
-               avg_count numeric, crowding_ratio numeric, sample_count bigint)
+               avg_count numeric, crowding_ratio numeric, sample_count bigint,
+               weeks bigint)
 LANGUAGE sql
 STABLE
 SET search_path = ''
@@ -382,14 +395,17 @@ AS $$
                CASE WHEN p_gran = '60min'
                     THEN date_trunc('hour', ('2000-01-01 '||w.slot_start_time)::timestamp)::time
                     ELSE w.slot_start_time END AS sst,
-               w.avg_current_count, w.avg_crowding_ratio, w.sample_count
+               w.avg_current_count, w.avg_crowding_ratio, w.sample_count,
+               w.weeks_observed
         FROM public.weekly_occupancy_slots w
         WHERE w.venue = p_venue
     )
     SELECT b.wd, b.lbl, b.sst,
            AVG(b.avg_current_count),
            AVG(b.avg_crowding_ratio),
-           SUM(b.sample_count)
+           SUM(b.sample_count),
+           -- MAX at 60min, for the reason given in gym_panel1_typical_rows.
+           MAX(b.weeks_observed)
     FROM bucketed b
     GROUP BY b.wd, b.lbl, b.sst
     ORDER BY b.sst, b.wd;
@@ -500,15 +516,15 @@ STABLE
 SET search_path = ''
 AS $$
     WITH rows AS (
-        SELECT 'typical'::text AS kind, t.hour, t.typical_count AS count, t.samples
+        SELECT 'typical'::text AS kind, t.hour, t.typical_count AS count, t.samples, t.weeks
         FROM api_private.gym_panel1_typical_rows(p_venue) t
         WHERE p_include_history
         UNION ALL
-        SELECT 'now'::text, n.hour, n.current_count, 1::bigint
+        SELECT 'now'::text, n.hour, n.current_count, 1::bigint, NULL::bigint
         FROM api_private.gym_panel1_now_rows(p_venue) n
         WHERE p_include_now
         UNION ALL
-        SELECT 'meta'::text, NULL::int, m.n, NULL::bigint
+        SELECT 'meta'::text, NULL::int, m.n, NULL::bigint, NULL::bigint
         FROM api_private.gym_panel1_meta_rows(p_venue) m
         WHERE p_include_history
     ),
@@ -520,7 +536,8 @@ AS $$
         api_private.series_field('kind',   'string', jsonb_agg(to_jsonb(o.kind)   ORDER BY o.ord)),
         api_private.series_field('hour',   'number', jsonb_agg(to_jsonb(o.hour)   ORDER BY o.ord)),
         api_private.series_field('count',  'number', jsonb_agg(to_jsonb(o.count)  ORDER BY o.ord)),
-        api_private.series_field('samples','number', jsonb_agg(to_jsonb(o.samples) ORDER BY o.ord))
+        api_private.series_field('samples','number', jsonb_agg(to_jsonb(o.samples) ORDER BY o.ord)),
+        api_private.series_field('weeks',  'number', jsonb_agg(to_jsonb(o.weeks)   ORDER BY o.ord))
     ))
     FROM ord o;
 $$;
@@ -543,7 +560,8 @@ AS $$
         api_private.series_field('slot_start_time','string', jsonb_agg(to_jsonb(to_char(o.slot_start_time, 'HH24:MI:SS')) ORDER BY o.ord)),
         api_private.series_field('avg_count',      'number', jsonb_agg(to_jsonb(o.avg_count) ORDER BY o.ord)),
         api_private.series_field('crowding_ratio', 'number', jsonb_agg(to_jsonb(o.crowding_ratio) ORDER BY o.ord)),
-        api_private.series_field('sample_count',   'number', jsonb_agg(to_jsonb(o.sample_count) ORDER BY o.ord))
+        api_private.series_field('sample_count',   'number', jsonb_agg(to_jsonb(o.sample_count) ORDER BY o.ord)),
+        api_private.series_field('weeks',          'number', jsonb_agg(to_jsonb(o.weeks) ORDER BY o.ord))
     ))
     FROM ord o;
 $$;

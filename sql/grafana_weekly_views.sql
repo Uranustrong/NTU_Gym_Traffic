@@ -307,6 +307,9 @@ WHERE NOT EXISTS (
 -- 57. A window turns over on its own when the term changes. A term calendar
 -- would also do that, but it would be another hand-maintained list of dates.
 -- Eight weeks gives roughly forty readings per weekday half-hour slot.
+-- The tooltips print "N of the last 8 weeks" as a literal in
+-- grafana/weekly-dashboard.json (panels 1 and 2). If this interval changes,
+-- change that text too.
 --
 -- Anchored to the newest reading, not now(), for two reasons. If collection
 -- stops, history should not drain away beneath the page week by week. And
@@ -377,6 +380,7 @@ slotted AS (
         fetched_at,
         current_count,
         crowding_ratio,
+        local_fetched_at::date AS local_date,
         EXTRACT(ISODOW FROM local_fetched_at)::integer AS weekday_number,
         TO_CHAR(local_fetched_at, 'Dy') AS weekday_label,
         MAKE_TIME(
@@ -425,7 +429,13 @@ SELECT
     MIN(current_count) AS min_current_count,
     MAX(current_count) AS max_current_count,
     COUNT(*) AS sample_count,
-    ROUND(AVG(crowding_ratio)::numeric, 4) AS avg_crowding_ratio
+    ROUND(AVG(crowding_ratio)::numeric, 4) AS avg_crowding_ratio,
+    -- How many weeks the average stands on. Each slot belongs to one weekday,
+    -- so its distinct dates are its distinct weeks. This is the confidence
+    -- figure the tooltips show. sample_count counts 5-minute readings, and
+    -- that number grows with collection frequency, not with evidence.
+    -- Appended last: CREATE OR REPLACE VIEW can only add columns at the end.
+    COUNT(DISTINCT local_date) AS weeks_observed
 FROM open_slots
 GROUP BY venue, weekday_number, weekday_label, slot_start_time, slot_label;
 
